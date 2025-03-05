@@ -4,6 +4,10 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Runtime.InteropServices
 
+# --- Global Variables ---
+$keystoreCertificates = New-Object System.Collections.ArrayList
+$p7bCertificates = New-Object System.Collections.ArrayList
+
 function Get-KeystorePassword {
     $form = New-Object System.Windows.Forms.Form -Property @{
         Text          = "Enter Keystore Password"
@@ -37,7 +41,7 @@ function Get-KeystorePassword {
     $cancelButton = New-Object System.Windows.Forms.Button -Property @{
         Location     = New-Object System.Drawing.Point(210, 80)
         Size         = New-Object System.Drawing.Size(75, 23)
-        Text         = "Cancel"
+Text         = "Cancel"
         DialogResult = [System.Windows.Forms.DialogResult]::Cancel
     }
     $form.Controls.Add($cancelButton)
@@ -260,6 +264,7 @@ function Build-CertificateChain {
         }
     }
 }
+
 function Compare-Certificates {
     param (
         [System.Windows.Forms.DataGridView]$KeystoreDataGridView,
@@ -405,7 +410,10 @@ $keystoreOpenButton.Add_Click({
         $keystoreCerts = Get-KeystoreCertificates -KeystorePath $keystoreTextBox.Text -Password $securePassword
 
         if ($keystoreCerts) {
-              # Create a DataTable for the keystore certificates
+            # Clear previous data
+            $keystoreCertificates.Clear()
+
+            # Create a DataTable for the keystore certificates
             $keystoreDataTable = New-Object System.Data.DataTable
             $keystoreDataTable.Columns.Add("Subject", [string]) | Out-Null
             $keystoreDataTable.Columns.Add("Issuer", [string]) | Out-Null
@@ -413,10 +421,9 @@ $keystoreOpenButton.Add_Click({
             $keystoreDataTable.Columns.Add("NotAfter", [datetime]) | Out-Null
             $keystoreDataTable.Columns.Add("Thumbprint", [string]) | Out-Null
             $keystoreDataTable.Columns.Add("SerialNumber", [string]) | Out-Null
-            $keystoreDataTable.Columns.Add("SKI", [string]) | Out-Null # Add SKI column
+            $keystoreDataTable.Columns.Add("SKI", [string]) | Out-Null
 
-
-            # Populate the DataTable
+            # Populate the DataTable and the ArrayList
             foreach ($cert in $keystoreCerts) {
                 $row = $keystoreDataTable.NewRow()
                 $row.Subject = $cert.Subject
@@ -425,8 +432,11 @@ $keystoreOpenButton.Add_Click({
                 $row.NotAfter = $cert.NotAfter
                 $row.Thumbprint = $cert.Thumbprint
                 $row.SerialNumber = $cert.SerialNumber
-                $row.SKI = Get-CertificateSKI $cert  # Extract and add SKI
+                $row.SKI = Get-CertificateSKI $cert
                 $keystoreDataTable.Rows.Add($row)
+
+                # Add the ORIGINAL certificate object to the ArrayList
+                $keystoreCertificates.Add($cert) | Out-Null
             }
             $keystoreDataGridView.DataSource = $keystoreDataTable
         }
@@ -446,6 +456,9 @@ $p7bBrowseButton.Add_Click({
         $p7bTextBox.Text = $OpenFileDialog.FileName
         $p7bCerts = Get-P7BCertificates -P7BPath $p7bTextBox.Text
         if ($p7bCerts) {
+            # Clear previous data
+            $p7bCertificates.Clear()
+
             # Create DataTable for P7B certificates
             $p7bDataTable = New-Object System.Data.DataTable
             $p7bDataTable.Columns.Add("Subject", [string]) | Out-Null
@@ -454,7 +467,7 @@ $p7bBrowseButton.Add_Click({
             $p7bDataTable.Columns.Add("NotAfter", [datetime]) | Out-Null
             $p7bDataTable.Columns.Add("Thumbprint", [string]) | Out-Null
             $p7bDataTable.Columns.Add("SerialNumber", [string]) | Out-Null
-            $p7bDataTable.Columns.Add("SKI", [string]) | Out-Null # Add SKI Column
+            $p7bDataTable.Columns.Add("SKI", [string]) | Out-Null
 
             foreach ($cert in $p7bCerts) {
                 $row = $p7bDataTable.NewRow()
@@ -464,8 +477,11 @@ $p7bBrowseButton.Add_Click({
                 $row.NotAfter = $cert.NotAfter
                 $row.Thumbprint = $cert.Thumbprint
                 $row.SerialNumber = $cert.SerialNumber
-                $row.SKI = Get-CertificateSKI $cert # Extract and add SKI.
+                $row.SKI = Get-CertificateSKI $cert
                 $p7bDataTable.Rows.Add($row)
+
+                # Add the ORIGINAL certificate object to the ArrayList
+                $p7bCertificates.Add($cert) | Out-Null
             }
             $p7bDataGridView.DataSource = $p7bDataTable
         }
@@ -488,10 +504,15 @@ $compareButton.Add_Click({
     Compare-Certificates -KeystoreDataGridView $keystoreDataGridView -P7bDataGridView $p7bDataGridView
 })
 
-
 $replaceButton.Add_Click({
-    $selectedKeystoreCert = $keystoreDataGridView.SelectedRows[0].DataBoundItem
-    $selectedP7BCert = $p7bDataGridView.SelectedRows[0].DataBoundItem
+    # Get selected row *indexes*
+    $selectedKeystoreIndex = $keystoreDataGridView.SelectedRows[0].Index
+    $selectedP7BIndex = $p7bDataGridView.SelectedRows[0].Index
+
+    # Get the *original* certificate objects using the indexes
+    $selectedKeystoreCert = $keystoreCertificates[$selectedKeystoreIndex]
+    $selectedP7BCert = $p7bCertificates[$selectedP7BIndex]
+
 
     if ($selectedKeystoreCert -and $selectedP7BCert) {
         $securePassword = Get-KeystorePassword
@@ -506,6 +527,10 @@ $replaceButton.Add_Click({
                     $updatedKeystoreCerts = Get-KeystoreCertificates -KeystorePath $keystoreTextBox.Text -Password $refreshSecurePassword
                     $refreshSecurePassword.Dispose()
                     if ($updatedKeystoreCerts) {
+
+                        # Clear previous data from the ArrayList
+                        $keystoreCertificates.Clear()
+
                          # Create a DataTable for the keystore certificates
                         $keystoreDataTable = New-Object System.Data.DataTable
                         $keystoreDataTable.Columns.Add("Subject", [string]) | Out-Null
@@ -516,7 +541,7 @@ $replaceButton.Add_Click({
                         $keystoreDataTable.Columns.Add("SerialNumber", [string]) | Out-Null
                          $keystoreDataTable.Columns.Add("SKI", [string]) | Out-Null
 
-                        # Populate the DataTable
+                        # Populate the DataTable and ArrayList
                         foreach ($cert in $updatedKeystoreCerts) {
                             $row = $keystoreDataTable.NewRow()
                             $row.Subject = $cert.Subject
@@ -527,6 +552,9 @@ $replaceButton.Add_Click({
                             $row.SerialNumber = $cert.SerialNumber
                             $row.SKI = Get-CertificateSKI $cert
                             $keystoreDataTable.Rows.Add($row)
+
+                            # Add to ArrayList
+                            $keystoreCertificates.Add($cert) | Out-Null
                         }
                         $keystoreDataGridView.DataSource = $keystoreDataTable
                         Compare-Certificates  -KeystoreDataGridView $keystoreDataGridView -P7bDataGridView $p7bDataGridView
@@ -546,16 +574,28 @@ $replaceButton.Add_Click({
      $compareButton.Enabled = ($keystoreDataGridView.DataSource -ne $null) -and ($p7bDataGridView.DataSource -ne $null)
 })
 
+#Build Chain (Modified)
 $createChainButton.Add_Click({
-    $selectedKeystoreCert = $keystoreDataGridView.SelectedRows[0].DataBoundItem
+    # Get selected row *indexes*
+    $selectedKeystoreIndex = $keystoreDataGridView.SelectedRows[0].Index
+
+      # Get the *original* certificate objects using the indexes
+    $selectedKeystoreCert = $keystoreCertificates[$selectedKeystoreIndex]
     $p7bCerts = $p7bDataGridView.DataSource
 
-    if($selectedKeystoreCert -and $p7bCerts)
+    if($selectedKeystoreCert -and $p7bCerts -is [System.Data.DataTable])
     {
+        # Convert DataTable to X509Certificate2Collection
+        $intermediateCerts = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
+        foreach($cert in $p7bCertificates)
+        {
+            $intermediateCerts.Add($cert)
+        }
+
         $securePassword = Get-KeystorePassword
         if($securePassword)
         {
-            Build-CertificateChain -LeafCertificate $selectedKeystoreCert -IntermediateCertificates $p7bCerts -KeystorePassword $securePassword
+            Build-CertificateChain -LeafCertificate $selectedKeystoreCert -IntermediateCertificates $intermediateCerts -KeystorePassword $securePassword
              $securePassword.Dispose()
         }
     }
@@ -621,3 +661,4 @@ $form.Controls.Add($compareButton)
 
 # --- Show the Form ---
 $form.ShowDialog()
+        
