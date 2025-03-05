@@ -80,23 +80,34 @@ $keystorePath = ""
 $p7bCollection = $null
 $p7bPath = ""
 
-# Function to highlight matching certificates
-function Highlight-MatchingCertificates {
+# Function to highlight matching certificates and expired certificates
+function Highlight-Certificates {
     $keystoreCertificateListBox.Items.Clear()
     $p7bCertificateListBox.Items.Clear()
 
     foreach ($keystoreCert in $keystoreCollection) {
-        $matchingCert = $p7bCollection | Where-Object {$_.Thumbprint -eq $keystoreCert.Thumbprint}
+        $matchingCert = $p7bCollection | Where-Object {$_.SubjectKeyIdentifier -eq $keystoreCert.SubjectKeyIdentifier}
         if ($matchingCert) {
-            $keystoreCertificateListBox.Items.Add("$($keystoreCert.Subject) (Match)")
-            $p7bCertificateListBox.Items.Add("$($matchingCert.Subject) (Match)")
+            # Highlight matching SKI with green background
+            $keystoreItem = New-Object System.Windows.Forms.ListViewItem($keystoreCert.Subject)
+            $keystoreItem.BackColor = 'Green'
+            $keystoreCertificateListBox.Items.Add($keystoreItem)
+
+            $p7bItem = New-Object System.Windows.Forms.ListViewItem($matchingCert.Subject)
+            $p7bItem.BackColor = 'Green'
+            $p7bCertificateListBox.Items.Add($p7bItem)
         } else {
-            $keystoreCertificateListBox.Items.Add($keystoreCert.Subject)
+            $keystoreItem = New-Object System.Windows.Forms.ListViewItem($keystoreCert.Subject)
+            # Highlight expired certificates with red text
+            if ($keystoreCert.NotAfter -lt (Get-Date)) {
+                $keystoreItem.ForeColor = 'Red'
+            }
+            $keystoreCertificateListBox.Items.Add($keystoreItem)
         }
     }
 
     foreach ($p7bCert in $p7bCollection) {
-        $matchingCert = $keystoreCollection | Where-Object {$_.Thumbprint -eq $p7bCert.Thumbprint}
+        $matchingCert = $keystoreCollection | Where-Object {$_.SubjectKeyIdentifier -eq $p7bCert.SubjectKeyIdentifier}
         if (-not $matchingCert) {
             $p7bCertificateListBox.Items.Add($p7bCert.Subject)
         }
@@ -186,8 +197,8 @@ $openKeystoreButton.Add_Click({
                 try{
                     $keystoreCollection.Import($keystorePath, $password, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::DefaultKeySet)
 
-                    # Call the function to highlight matches
-                    Highlight-MatchingCertificates
+                    # Call the function to highlight certificates
+                    Highlight-Certificates
                 }
                 catch{
                   [System.Windows.Forms.MessageBox]::Show("Invalid Password or Keystore", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
@@ -214,8 +225,8 @@ $openP7BButton.Add_Click({
             $p7bCollection = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
             $p7bCollection.Import($p7bPath)
 
-            # Call the function to highlight matches
-            Highlight-MatchingCertificates
+            # Call the function to highlight certificates
+            Highlight-Certificates
         }
         catch {
             [System.Windows.Forms.MessageBox]::Show("Error opening P7B file: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
@@ -227,17 +238,13 @@ $openP7BButton.Add_Click({
 
 # Replace Button Click Event
 $replaceButton.Add_Click({
-    $keystoreCertSubject = $keystoreCertificateListBox.SelectedItem
-    $p7bCertSubject = $p7bCertificateListBox.SelectedItem
+    $keystoreCertIndex = $keystoreCertificateListBox.SelectedIndices[0]
+    $p7bCertIndex = $p7bCertificateListBox.SelectedIndices[0]
 
-    # Remove the "(Match)" suffix from the subject
-    $keystoreCertSubject = $keystoreCertSubject -replace " \(Match\)", ""
-    $p7bCertSubject = $p7bCertSubject -replace " \(Match\)", ""
+    if ($keystoreCertIndex -ne $null -and $p7bCertIndex -ne $null) {
+        $keystoreCert = $keystoreCollection[$keystoreCertIndex]
+        $p7bCert = $p7bCollection[$p7bCertIndex]
 
-    $keystoreCert = $keystoreCollection | Where-Object {$_.Subject -eq $keystoreCertSubject}
-    $p7bCert = $p7bCollection | Where-Object {$_.Subject -eq $p7bCertSubject}
-
-    if ($keystoreCert -and $p7bCert) {
         $keystoreCollection.Remove($keystoreCert)
         $keystoreCollection.Add($p7bCert)
 
@@ -245,7 +252,7 @@ $replaceButton.Add_Click({
         $keystoreCollection.Export($keystorePath, $password, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::DefaultKeySet)
 
         # Refresh the listboxes to reflect the change and highlight matches
-        Highlight-MatchingCertificates
+        Highlight-Certificates
 
         [System.Windows.Forms.MessageBox]::Show("Certificate replaced successfully!", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
     }
