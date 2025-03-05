@@ -57,6 +57,14 @@ $replaceButton.Text = "Replace Selected"
 $replaceButton.Enabled = $false
 $form.Controls.Add($replaceButton)
 
+# Chain Button
+$chainButton = New-Object System.Windows.Forms.Button
+$chainButton.Location = New-Object System.Drawing.Point(170, 560)
+$chainButton.Size = New-Object System.Drawing.Size(150, 30)
+$chainButton.Text = "Create Chain"
+$chainButton.Enabled = $false
+$form.Controls.Add($chainButton)
+
 # Open File Dialogs
 $openKeystoreFileDialog = New-Object System.Windows.Forms.OpenFileDialog
 $openKeystoreFileDialog.Filter = "Keystore Files (*.p12;*.pfx)|*.p12;*.pfx|All files (*.*)|*.*"
@@ -71,6 +79,64 @@ $keystoreCollection = $null
 $keystorePath = ""
 $p7bCollection = $null
 $p7bPath = ""
+
+# Function to highlight matching certificates
+function Highlight-MatchingCertificates {
+    $keystoreCertificateListBox.Items.Clear()
+    $p7bCertificateListBox.Items.Clear()
+
+    foreach ($keystoreCert in $keystoreCollection) {
+        $matchingCert = $p7bCollection | Where-Object {$_.Thumbprint -eq $keystoreCert.Thumbprint}
+        if ($matchingCert) {
+            $keystoreCertificateListBox.Items.Add("$($keystoreCert.Subject) (Match)")
+            $p7bCertificateListBox.Items.Add("$($matchingCert.Subject) (Match)")
+        } else {
+            $keystoreCertificateListBox.Items.Add($keystoreCert.Subject)
+        }
+    }
+
+    foreach ($p7bCert in $p7bCollection) {
+        $matchingCert = $keystoreCollection | Where-Object {$_.Thumbprint -eq $p7bCert.Thumbprint}
+        if (-not $matchingCert) {
+            $p7bCertificateListBox.Items.Add($p7bCert.Subject)
+        }
+    }
+}
+
+# Function to create certificate chain
+function Create-CertificateChain {
+    $personalCert = $keystoreCollection | Where-Object {$_.HasPrivateKey -eq $true}
+    if (-not $personalCert) {
+        [System.Windows.Forms.MessageBox]::Show("No personal certificate found in the keystore.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        return
+    }
+
+    $chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain
+    $chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
+    $chain.ChainPolicy.VerificationFlags = [System.Security.Cryptography.X509Certificates.X509VerificationFlags]::IgnoreNotTimeValid
+
+    # Add the personal certificate to the chain
+    $chain.Build($personalCert)
+
+    # Add extra certificates from P7B to the chain
+    foreach ($extraCert in $p7bCollection) {
+        if ($chain.ChainElements.Count -gt 1) {
+            break  # Stop if the chain already has an issuer
+        }
+        if ($extraCert.Subject -ne $personalCert.Subject) {
+            $chain.ChainPolicy.ExtraStore.Add($extraCert)
+        }
+    }
+
+    if ($chain.ChainElements.Count -gt 1) {
+        # Save the chained certificate to a new PFX file
+        $chainedCertPath = [System.IO.Path]::ChangeExtension($keystorePath, "chained.pfx")
+        $chain.ChainElements[0].Certificate.Export($chainedCertPath, $password, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::DefaultKeySet)
+        [System.Windows.Forms.MessageBox]::Show("Certificate chain created successfully! Saved to: $($chainedCertPath)", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+    } else {
+        [System.Windows.Forms.MessageBox]::Show("Could not create a complete certificate chain.", "Warning", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+    }
+}
 
 # Open Keystore Button Click Event
 $openKeystoreButton.Add_Click({
@@ -120,9 +186,8 @@ $openKeystoreButton.Add_Click({
                 try{
                     $keystoreCollection.Import($keystorePath, $password, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::DefaultKeySet)
 
-                    foreach ($cert in $keystoreCollection) {
-                        $keystoreCertificateListBox.Items.Add($cert.Subject)
-                    }
+                    # Call the function to highlight matches
+                    Highlight-MatchingCertificates
                 }
                 catch{
                   [System.Windows.Forms.MessageBox]::Show("Invalid Password or Keystore", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
@@ -135,6 +200,7 @@ $openKeystoreButton.Add_Click({
         }
     }
     $replaceButton.Enabled = ($keystoreCollection -ne $null) -and ($p7bCollection -ne $null)
+    $chainButton.Enabled = ($keystoreCollection -ne $null) -and ($p7bCollection -ne $null)
 })
 
 # Open P7B Button Click Event
@@ -148,21 +214,25 @@ $openP7BButton.Add_Click({
             $p7bCollection = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
             $p7bCollection.Import($p7bPath)
 
-            foreach ($cert in $p7bCollection) {
-                $p7bCertificateListBox.Items.Add($cert.Subject)
-            }
+            # Call the function to highlight matches
+            Highlight-MatchingCertificates
         }
         catch {
             [System.Windows.Forms.MessageBox]::Show("Error opening P7B file: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
         }
     }
     $replaceButton.Enabled = ($keystoreCollection -ne $null) -and ($p7bCollection -ne $null)
+    $chainButton.Enabled = ($keystoreCollection -ne $null) -and ($p7bCollection -ne $null)
 })
 
 # Replace Button Click Event
 $replaceButton.Add_Click({
     $keystoreCertSubject = $keystoreCertificateListBox.SelectedItem
     $p7bCertSubject = $p7bCertificateListBox.SelectedItem
+
+    # Remove the "(Match)" suffix from the subject
+    $keystoreCertSubject = $keystoreCertSubject -replace " \(Match\)", ""
+    $p7bCertSubject = $p7bCertSubject -replace " \(Match\)", ""
 
     $keystoreCert = $keystoreCollection | Where-Object {$_.Subject -eq $keystoreCertSubject}
     $p7bCert = $p7bCollection | Where-Object {$_.Subject -eq $p7bCertSubject}
@@ -171,14 +241,19 @@ $replaceButton.Add_Click({
         $keystoreCollection.Remove($keystoreCert)
         $keystoreCollection.Add($p7bCert)
 
-        $keystoreCertificateListBox.Items.Remove($keystoreCertSubject)
-        $keystoreCertificateListBox.Items.Add($p7bCertSubject)
-
         # Update the keystore file (requires password)
         $keystoreCollection.Export($keystorePath, $password, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::DefaultKeySet)
 
+        # Refresh the listboxes to reflect the change and highlight matches
+        Highlight-MatchingCertificates
+
         [System.Windows.Forms.MessageBox]::Show("Certificate replaced successfully!", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
     }
+})
+
+# Chain Button Click Event
+$chainButton.Add_Click({
+    Create-CertificateChain
 })
 
 $form.Add_Shown({$form.Activate()})
