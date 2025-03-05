@@ -11,7 +11,7 @@ $form.StartPosition = "CenterScreen"
 $filePathTextBox = New-Object System.Windows.Forms.TextBox
 $filePathTextBox.Location = New-Object System.Drawing.Point(10, 10)
 $filePathTextBox.Size = New-Object System.Drawing.Size(650, 20)
-$filePathTextBox.ReadOnly = $true  # User can't type directly, only browse
+$filePathTextBox.ReadOnly = $true
 $form.Controls.Add($filePathTextBox)
 
 # Create a Browse button
@@ -30,8 +30,6 @@ $dataGridView.ReadOnly = $true
 $dataGridView.AllowUserToAddRows = $false
 $form.Controls.Add($dataGridView)
 
-
-
 # Function to load certificates from a P7B file
 function Get-P7BCertificates {
     param (
@@ -40,7 +38,7 @@ function Get-P7BCertificates {
 
     try {
         $p7b = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
-        $p7b.Import($P7BPath)  # No password needed for P7B
+        $p7b.Import($P7BPath)
         return $p7b
     }
     catch {
@@ -49,7 +47,6 @@ function Get-P7BCertificates {
         return $null
     }
 }
-
 
 # Event handler for the Browse button
 $browseButton.Add_Click({
@@ -61,7 +58,9 @@ $browseButton.Add_Click({
         # Load and display certificates
         $certificates = Get-P7BCertificates -P7BPath $filePathTextBox.Text
         if ($certificates) {
-            $dataGridView.DataSource = $certificates
+            # *** KEY CHANGE: Use Select-Object to choose properties ***
+            $displayData = $certificates | Select-Object Subject, Issuer, NotBefore, NotAfter, Thumbprint, SerialNumber
+            $dataGridView.DataSource = $displayData
         }
     }
 })
