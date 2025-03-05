@@ -2,7 +2,7 @@
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
-Add-Type -AssemblyName System.Runtime.InteropServices # Added for Marshal
+Add-Type -AssemblyName System.Runtime.InteropServices
 
 function Get-KeystoreCertificates {
     param (
@@ -31,135 +31,6 @@ function Get-KeystoreCertificates {
         }
     }
 }
-
-function Set-KeystoreCertificate {
-    param(
-        [string]$KeystorePath,
-        [System.Security.SecureString]$KeystorePassword,
-        [System.Security.Cryptography.X509Certificates.X509Certificate2]$OldCertificate,
-        [System.Security.Cryptography.X509Certificates.X509Certificate2]$NewCertificate
-    )
-
-    $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($KeystorePassword)
-    $passwordString = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
-
-    try {
-        # Reopen the keystore with read/write access
-        $keystore = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
-        $keystore.Import($KeystorePath, $passwordString, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::DefaultKeySet -bor [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet)
-
-        # Find the index of the certificate to be replaced (more robust than relying on selected row index)
-        $indexToReplace = -1
-        for ($i = 0; $i -lt $keystore.Count; $i++) {
-            if ($keystore[$i].Thumbprint -eq $OldCertificate.Thumbprint) {
-                $indexToReplace = $i
-                break
-            }
-        }
-
-        if ($indexToReplace -eq -1) {
-            Write-Warning "The certificate to be replaced was not found in the keystore."
-             [System.Windows.Forms.MessageBox]::Show("The certificate to be replaced was not found in the keystore.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-            return $false
-        }
-        #Remove old certificate
-        $keystore.RemoveAt($indexToReplace)
-
-        # Add the new certificate
-        $keystore.Add($NewCertificate)
-
-        # Save the changes back to the keystore file
-        $keystoreBytes = $keystore.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pkcs12, $passwordString)
-        [System.IO.File]::WriteAllBytes($KeystorePath, $keystoreBytes)
-
-        Write-Host "Certificate replaced successfully." -ForegroundColor Green
-        [System.Windows.Forms.MessageBox]::Show("Certificate replaced successfully.", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-        return $true
-    }
-    catch {
-        Write-Warning "Error replacing certificate: $($_.Exception.Message)"
-        [System.Windows.Forms.MessageBox]::Show("Error replacing certificate: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-        return $false
-    }
-    finally {
-        if ($bstr) {
-            [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
-        }
-        if($KeystorePassword){
-            $KeystorePassword.Dispose()
-        }
-    }
-}
-
-function Build-CertificateChain {
-    param (
-        [System.Security.Cryptography.X509Certificates.X509Certificate2]$LeafCertificate,
-        [System.Security.Cryptography.X509Certificates.X509Certificate2Collection]$IntermediateCertificates,
-        [System.Security.SecureString]$KeystorePassword
-    )
-
-    $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($KeystorePassword)
-    $passwordString = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
-
-    try {
-        $chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain
-        $chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck #For the example, avoid checking
-        $chain.ChainPolicy.VerificationFlags = [System.Security.Cryptography.X509Certificates.X509VerificationFlags]::NoFlag #For the example, avoid checking
-        $chain.ChainPolicy.ExtraStore.AddRange($IntermediateCertificates)
-
-        if ($chain.Build($LeafCertificate)) {
-            $chainedCerts = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
-            $chainedCerts.Add($LeafCertificate)
-
-            # Add intermediate and root certificates from the chain
-            foreach ($element in $chain.ChainElements) {
-                 if ($element.Certificate.Thumbprint -ne $LeafCertificate.Thumbprint)
-                 {
-                    $chainedCerts.Add($element.Certificate)
-                 }
-            }
-
-             # Prompt for the output PFX file path
-            $SaveFileDialog = New-Object System.Windows.Forms.SaveFileDialog
-            $SaveFileDialog.Filter = "PFX files (*.pfx)|*.pfx"
-            $SaveFileDialog.Title = "Save Chained Certificate As"
-            $SaveFileDialog.FileName = "chained_certificate.pfx"
-            if ($SaveFileDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-                $outputPath = $SaveFileDialog.FileName
-
-                 # Export the chained certificates to a new PFX file
-                 $pfxBytes = $chainedCerts.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pkcs12, $passwordString)
-                 [System.IO.File]::WriteAllBytes($outputPath, $pfxBytes)
-                Write-Host "Certificate chain saved to: $outputPath" -ForegroundColor Green
-                [System.Windows.Forms.MessageBox]::Show("Certificate chain saved to: $outputPath", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-            }
-        }
-        else {
-            Write-Warning "Failed to build a valid certificate chain."
-            [System.Windows.Forms.MessageBox]::Show("Failed to build a valid certificate chain.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-            Write-Host "Chain Status:" -ForegroundColor Yellow
-            foreach($status in $chain.ChainStatus){
-                Write-Host ("  " + $status.StatusInformation) -ForegroundColor Yellow
-            }
-        }
-    }
-    catch {
-        Write-Warning "Error building certificate chain: $($_.Exception.Message)"
-        [System.Windows.Forms.MessageBox]::Show("Error building certificate chain: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-    }
-    finally{
-        if ($chain -ne $null){
-            $chain.Reset() #reset the chain status
-        }
-        if ($bstr) {
-            [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
-        }
-         if($KeystorePassword){
-            $KeystorePassword.Dispose()
-        }
-    }
-}
-
 
 function Get-P7BCertificates {
     param (
@@ -194,12 +65,12 @@ function Show-Certificate {
             }
 
             # Highlight matching SKIs
-            $ski = $cert.Extensions | Where-Object {$_.Oid.Value -eq "2.5.29.14"}  # Subject Key Identifier OID
-            if ($ski -and $MatchingSKIs.Contains($ski.Format(0))) { #0 = no formatting. We just need the value as string.
+            $ski = $cert.Extensions | Where-Object {$_.Oid.Value -eq "2.5.29.14"}
+            if ($ski -and $MatchingSKIs.Contains($ski.Format(0))) {
                 $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::LightGreen
             }
 
-            $DataGridView.ClearSelection() # avoid auto-selecting after changing the color.
+            $DataGridView.ClearSelection()
         }
     }
 }
@@ -207,16 +78,131 @@ function Show-Certificate {
 function Get-CertificateSKI {
     param([System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate)
 
-    $skiExtension = $Certificate.Extensions | Where-Object {$_.Oid.Value -eq "2.5.29.14"}  # Subject Key Identifier OID
+    $skiExtension = $Certificate.Extensions | Where-Object {$_.Oid.Value -eq "2.5.29.14"}
     if ($skiExtension) {
-        return $skiExtension.Format(0)  # Raw SKI value
+        return $skiExtension.Format(0)
     }
     return $null
 }
 
 
+function Set-KeystoreCertificate {
+    param(
+        [string]$KeystorePath,
+        [System.Security.SecureString]$KeystorePassword,
+        [System.Security.Cryptography.X509Certificates.X509Certificate2]$OldCertificate,
+        [System.Security.Cryptography.X509Certificates.X509Certificate2]$NewCertificate
+    )
+
+    $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($KeystorePassword)
+    $passwordString = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+
+    try {
+        $keystore = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
+        $keystore.Import($KeystorePath, $passwordString, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::DefaultKeySet -bor [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet)
+
+        $indexToReplace = -1
+        for ($i = 0; $i -lt $keystore.Count; $i++) {
+            if ($keystore[$i].Thumbprint -eq $OldCertificate.Thumbprint) {
+                $indexToReplace = $i
+                break
+            }
+        }
+
+        if ($indexToReplace -eq -1) {
+            Write-Warning "The certificate to be replaced was not found in the keystore."
+             [System.Windows.Forms.MessageBox]::Show("The certificate to be replaced was not found in the keystore.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            return $false
+        }
+        $keystore.RemoveAt($indexToReplace)
+        $keystore.Add($NewCertificate)
+        $keystoreBytes = $keystore.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pkcs12, $passwordString)
+        [System.IO.File]::WriteAllBytes($KeystorePath, $keystoreBytes)
+
+        Write-Host "Certificate replaced successfully." -ForegroundColor Green
+        [System.Windows.Forms.MessageBox]::Show("Certificate replaced successfully.", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        return $true
+    }
+    catch {
+        Write-Warning "Error replacing certificate: $($_.Exception.Message)"
+        [System.Windows.Forms.MessageBox]::Show("Error replacing certificate: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        return $false
+    }
+    finally {
+        if ($bstr) {
+            [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+        }
+        if($KeystorePassword){
+            $KeystorePassword.Dispose()
+        }
+    }
+}
 
 
+function Build-CertificateChain {
+    param (
+        [System.Security.Cryptography.X509Certificates.X509Certificate2]$LeafCertificate,
+        [System.Security.Cryptography.X509Certificates.X509Certificate2Collection]$IntermediateCertificates,
+        [System.Security.SecureString]$KeystorePassword
+    )
+
+    $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($KeystorePassword)
+    $passwordString = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+
+    try {
+        $chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain
+        $chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
+        $chain.ChainPolicy.VerificationFlags = [System.Security.Cryptography.X509Certificates.X509VerificationFlags]::NoFlag
+        $chain.ChainPolicy.ExtraStore.AddRange($IntermediateCertificates)
+
+        if ($chain.Build($LeafCertificate)) {
+            $chainedCerts = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
+            $chainedCerts.Add($LeafCertificate)
+
+            foreach ($element in $chain.ChainElements) {
+                 if ($element.Certificate.Thumbprint -ne $LeafCertificate.Thumbprint)
+                 {
+                    $chainedCerts.Add($element.Certificate)
+                 }
+            }
+
+            $SaveFileDialog = New-Object System.Windows.Forms.SaveFileDialog
+            $SaveFileDialog.Filter = "PFX files (*.pfx)|*.pfx"
+            $SaveFileDialog.Title = "Save Chained Certificate As"
+            $SaveFileDialog.FileName = "chained_certificate.pfx"
+            if ($SaveFileDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+                $outputPath = $SaveFileDialog.FileName
+                 $pfxBytes = $chainedCerts.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pkcs12, $passwordString)
+                 [System.IO.File]::WriteAllBytes($outputPath, $pfxBytes)
+                Write-Host "Certificate chain saved to: $outputPath" -ForegroundColor Green
+                [System.Windows.Forms.MessageBox]::Show("Certificate chain saved to: $outputPath", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            }
+        }
+        else {
+            Write-Warning "Failed to build a valid certificate chain."
+            [System.Windows.Forms.MessageBox]::Show("Failed to build a valid certificate chain.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            Write-Host "Chain Status:" -ForegroundColor Yellow
+            foreach($status in $chain.ChainStatus){
+                Write-Host ("  " + $status.StatusInformation) -ForegroundColor Yellow
+            }
+        }
+    }
+    catch {
+        Write-Warning "Error building certificate chain: $($_.Exception.Message)"
+        [System.Windows.Forms.MessageBox]::Show("Error building certificate chain: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+    finally{
+        if ($chain -ne $null){
+            $chain.Reset()
+        }
+        if ($bstr) {
+            [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+        }
+         if($KeystorePassword){
+            $KeystorePassword.Dispose()
+        }
+    }
+}
 
 function Compare-Certificates {
   $keystoreCerts = $keystoreDataGridView.DataSource
@@ -231,8 +217,8 @@ function Compare-Certificates {
         foreach ($p7bCert in $p7bCerts) {
           $p7bSKI = Get-CertificateSKI $p7bCert
           if ($p7bSKI -and $keystoreSKI -eq $p7bSKI) {
-            $matchingSKIs.Add($keystoreSKI) | Out-Null  # Add to the list, suppress output
-            break  # No need to continue inner loop once a match is found
+            $matchingSKIs.Add($keystoreSKI) | Out-Null
+            break
           }
         }
       }
@@ -245,7 +231,7 @@ function Compare-Certificates {
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Keystore and P7B Certificate Comparator"
-$form.Size = New-Object System.Drawing.Size(1200, 500) # Adjusted height
+$form.Size = New-Object System.Drawing.Size(1200, 500)
 $form.StartPosition = "CenterScreen"
 
 # --- Keystore Controls ---
@@ -266,16 +252,16 @@ $keystoreBrowseButton.Size = New-Object System.Drawing.Size(75, 23)
 $keystoreBrowseButton.Text = "Browse..."
 
 
-$keystorePasswordLabel = New-Object System.Windows.Forms.Label  # Keep the label for context
+$keystorePasswordLabel = New-Object System.Windows.Forms.Label
 $keystorePasswordLabel.Location = New-Object System.Drawing.Point(10, 40)
 $keystorePasswordLabel.Size = New-Object System.Drawing.Size(100, 20)
 $keystorePasswordLabel.Text = "Password:"
 
-$keystorePasswordField = New-Object System.Windows.Forms.TextBox #Keep for create chain
+$keystorePasswordField = New-Object System.Windows.Forms.TextBox
 $keystorePasswordField.Location = New-Object System.Drawing.Point(110, 40)
 $keystorePasswordField.Size = New-Object System.Drawing.Size(200, 20)
 $keystorePasswordField.PasswordChar = "*"
-$keystorePasswordField.Visible = $false # Hide it
+$keystorePasswordField.Visible = $false
 
 $keystoreOpenButton = New-Object System.Windows.Forms.Button
 $keystoreOpenButton.Location = New-Object System.Drawing.Point(320, 37)
@@ -289,7 +275,7 @@ $keystoreDataGridView.AutoSizeColumnsMode = [System.Windows.Forms.DataGridViewAu
 $keystoreDataGridView.AllowUserToAddRows = $false
 $keystoreDataGridView.ReadOnly = $true;
 $keystoreDataGridView.SelectionMode = "FullRowSelect"
-$keystoreDataGridView.MultiSelect = $false; # Important: Only allow one selection
+$keystoreDataGridView.MultiSelect = $false;
 
 # --- P7B Controls ---
 
@@ -309,7 +295,7 @@ $p7bBrowseButton.Size = New-Object System.Drawing.Size(75, 23)
 $p7bBrowseButton.Text = "Browse..."
 
 $p7bOpenButton = New-Object System.Windows.Forms.Button
-$p7bOpenButton.Location = New-Object System.Drawing.Point(710, 37) #Adjust location if needed.
+$p7bOpenButton.Location = New-Object System.Drawing.Point(710, 37)
 $p7bOpenButton.Size = New-Object System.Drawing.Size(75, 23)
 $p7bOpenButton.Text = "Open"
 
@@ -321,7 +307,7 @@ $p7bDataGridView.AutoSizeColumnsMode = [System.Windows.Forms.DataGridViewAutoSiz
 $p7bDataGridView.AllowUserToAddRows = $false
 $p7bDataGridView.ReadOnly = $true;
 $p7bDataGridView.SelectionMode = "FullRowSelect"
-$p7bDataGridView.MultiSelect = $false; # Important: Only allow one selection
+$p7bDataGridView.MultiSelect = $false;
 
 # --- Action Buttons ---
 
@@ -329,13 +315,20 @@ $replaceButton = New-Object System.Windows.Forms.Button
 $replaceButton.Location = New-Object System.Drawing.Point(10, 380)
 $replaceButton.Size = New-Object System.Drawing.Size(150, 30)
 $replaceButton.Text = "Replace Certificate"
-$replaceButton.Enabled = $false  # Initially disabled
+$replaceButton.Enabled = $false
 
 $createChainButton = New-Object System.Windows.Forms.Button
 $createChainButton.Location = New-Object System.Drawing.Point(170, 380)
 $createChainButton.Size = New-Object System.Drawing.Size(150, 30)
 $createChainButton.Text = "Create Chain"
-$createChainButton.Enabled = $false # Initially disabled
+$createChainButton.Enabled = $false
+
+# --- DataBindingComplete event for keystoreDataGridView ---
+$keystoreDataGridView.add_DataBindingComplete({
+    if ($keystoreDataGridView.Columns.Contains("PrivateKey")) {
+        $keystoreDataGridView.Columns["PrivateKey"].Visible = $false
+    }
+})
 
 # --- Event Handlers ---
 
@@ -345,16 +338,14 @@ $keystoreOpenButton.Add_Click({
         return
     }
 
-    # Get password securely
     $securePassword = Read-Host "Enter keystore password" -AsSecureString
 
     $keystoreCerts = Get-KeystoreCertificates -KeystorePath $keystoreTextBox.Text -Password $securePassword
 
     if ($keystoreCerts) {
         $keystoreDataGridView.DataSource = $keystoreCerts
-        $keystoreDataGridView.Columns["PrivateKey"].Visible = $false # Hide the private key
+        # PrivateKey visibility handled by DataBindingComplete event
 
-         # Check if a P7B file is already open and compare certificates
         if (![string]::IsNullOrEmpty($p7bTextBox.Text)) {
             $p7bCerts = Get-P7BCertificates -P7BPath $p7bTextBox.Text
             if ($p7bCerts) {
@@ -362,14 +353,13 @@ $keystoreOpenButton.Add_Click({
                 Compare-Certificates
             }
         } else {
-             #If no P7B opened, simply highlight expired.
-              $matchingSkis = New-Object System.Collections.ArrayList #empty list
-              Show-Certificate -DataGridView $keystoreDataGridView -MatchingSKIs $matchingSkis
+            $matchingSkis = New-Object System.Collections.ArrayList
+            Show-Certificate -DataGridView $keystoreDataGridView -MatchingSKIs $matchingSkis
         }
     }
      $replaceButton.Enabled = $false
      $createChainButton.Enabled = $false
-     $securePassword.Dispose() # Dispose immediately after use
+     $securePassword.Dispose()
 })
 
 $p7bOpenButton.Add_Click({
@@ -383,25 +373,22 @@ $p7bOpenButton.Add_Click({
     if ($p7bCerts) {
         $p7bDataGridView.DataSource = $p7bCerts
 
-        # Check if a keystore file is already open and compare
         if (![string]::IsNullOrEmpty($keystoreTextBox.Text)) {
-              # Get password securely
-              $securePassword = Read-Host "Enter keystore password" -AsSecureString
-              $keystoreCerts = Get-KeystoreCertificates -KeystorePath $keystoreTextBox.Text -Password $securePassword
+            $securePassword = Read-Host "Enter keystore password" -AsSecureString
+            $keystoreCerts = Get-KeystoreCertificates -KeystorePath $keystoreTextBox.Text -Password $securePassword
 
-              if($keystoreCerts)
-              {
-                $keystoreDataGridView.DataSource = $keystoreCerts
-                $keystoreDataGridView.Columns["PrivateKey"].Visible = $false # Hide the private key
-                Compare-Certificates
-              }
-              $securePassword.Dispose() # Dispose immediately after use
+            if($keystoreCerts)
+            {
+              $keystoreDataGridView.DataSource = $keystoreCerts
+              # PrivateKey visibility handled by DataBindingComplete event
+              Compare-Certificates
+            }
+            $securePassword.Dispose()
         }
-         else {
-            #If no Keystore is opened.
-             $matchingSkis = New-Object System.Collections.ArrayList
-             Show-Certificate -DataGridView $p7bDataGridView -MatchingSKIs $matchingSkis
-         }
+        else {
+            $matchingSkis = New-Object System.Collections.ArrayList
+            Show-Certificate -DataGridView $p7bDataGridView -MatchingSKIs $matchingSkis
+        }
     }
     $replaceButton.Enabled = $false
     $createChainButton.Enabled = $false
@@ -425,27 +412,23 @@ $p7bBrowseButton.Add_Click({
 })
 
 $replaceButton.Add_Click({
-    # Get selected certificates
     $selectedKeystoreCert = $keystoreDataGridView.SelectedRows[0].DataBoundItem
     $selectedP7BCert = $p7bDataGridView.SelectedRows[0].DataBoundItem
 
     if ($selectedKeystoreCert -and $selectedP7BCert) {
-        # Get password securely
         $securePassword = Read-Host "Enter keystore password to replace certificate" -AsSecureString
 
         $replaceResult = Set-KeystoreCertificate -KeystorePath $keystoreTextBox.Text -KeystorePassword $securePassword -OldCertificate $selectedKeystoreCert -NewCertificate $selectedP7BCert
         $securePassword.Dispose()
 
         if($replaceResult){
-            # Refresh the keystore DataGridView
-            # Get password securely
             $refreshSecurePassword = Read-Host "Enter keystore password to refresh view" -AsSecureString
             $updatedKeystoreCerts = Get-KeystoreCertificates -KeystorePath $keystoreTextBox.Text -Password $refreshSecurePassword
-            $refreshSecurePassword.Dispose() #Dispose
+            $refreshSecurePassword.Dispose()
             if ($updatedKeystoreCerts) {
                 $keystoreDataGridView.DataSource = $updatedKeystoreCerts
-                $keystoreDataGridView.Columns["PrivateKey"].Visible = $false
-                Compare-Certificates # Re-compare after replacement
+                # PrivateKey visibility handled by DataBindingComplete event
+                Compare-Certificates
             }
         }
     }
@@ -459,16 +442,14 @@ $replaceButton.Add_Click({
 })
 
 $createChainButton.Add_Click({
-      # Get selected certificates
     $selectedKeystoreCert = $keystoreDataGridView.SelectedRows[0].DataBoundItem
     $p7bCerts = $p7bDataGridView.DataSource
 
     if($selectedKeystoreCert -and $p7bCerts)
     {
-        # Get password securely
         $securePassword = Read-Host "Enter keystore password to create chain" -AsSecureString
         Build-CertificateChain -LeafCertificate $selectedKeystoreCert -IntermediateCertificates $p7bCerts -KeystorePassword $securePassword
-        $securePassword.Dispose() #Dispose
+        $securePassword.Dispose()
     }
      else
     {
@@ -480,7 +461,6 @@ $createChainButton.Add_Click({
 
 })
 
-# --- Enable buttons if appropriate ---
 $keystoreDataGridView.add_SelectionChanged({
     if($keystoreDataGridView.SelectedRows.Count -gt 0 -and $p7bDataGridView.SelectedRows.Count -gt 0){
         $replaceButton.Enabled = $true
