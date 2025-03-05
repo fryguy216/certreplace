@@ -12,7 +12,9 @@ function Get-KeystoreCertificates {
 
     try {
         $keystore = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
-        $keystore.Import($KeystorePath, $Password, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable -bor [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet)
+        $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($Password)
+        $passwordString = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+        $keystore.Import($KeystorePath, $passwordString, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable -bor [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet)
         return $keystore
     }
     catch {
@@ -21,9 +23,140 @@ function Get-KeystoreCertificates {
         return $null
     }
     finally {
-      if($Password){
-        $Password.Dispose()
-      }
+        if ($bstr) {
+            [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+        }
+        if($Password){
+            $Password.Dispose()
+        }
+    }
+}
+
+function Set-KeystoreCertificate {
+    param(
+        [string]$KeystorePath,
+        [System.Security.SecureString]$KeystorePassword,
+        [System.Security.Cryptography.X509Certificates.X509Certificate2]$OldCertificate,
+        [System.Security.Cryptography.X509Certificates.X509Certificate2]$NewCertificate
+    )
+
+    $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($KeystorePassword)
+    $passwordString = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+
+    try {
+        # Reopen the keystore with read/write access
+        $keystore = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
+        $keystore.Import($KeystorePath, $passwordString, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::DefaultKeySet -bor [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet)
+
+        # Find the index of the certificate to be replaced (more robust than relying on selected row index)
+        $indexToReplace = -1
+        for ($i = 0; $i -lt $keystore.Count; $i++) {
+            if ($keystore[$i].Thumbprint -eq $OldCertificate.Thumbprint) {
+                $indexToReplace = $i
+                break
+            }
+        }
+
+        if ($indexToReplace -eq -1) {
+            Write-Warning "The certificate to be replaced was not found in the keystore."
+             [System.Windows.Forms.MessageBox]::Show("The certificate to be replaced was not found in the keystore.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            return $false
+        }
+        #Remove old certificate
+        $keystore.RemoveAt($indexToReplace)
+
+        # Add the new certificate
+        $keystore.Add($NewCertificate)
+
+        # Save the changes back to the keystore file
+        $keystoreBytes = $keystore.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pkcs12, $passwordString)
+        [System.IO.File]::WriteAllBytes($KeystorePath, $keystoreBytes)
+
+        Write-Host "Certificate replaced successfully." -ForegroundColor Green
+        [System.Windows.Forms.MessageBox]::Show("Certificate replaced successfully.", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        return $true
+    }
+    catch {
+        Write-Warning "Error replacing certificate: $($_.Exception.Message)"
+        [System.Windows.Forms.MessageBox]::Show("Error replacing certificate: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        return $false
+    }
+    finally {
+        if ($bstr) {
+            [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+        }
+        if($KeystorePassword){
+            $KeystorePassword.Dispose()
+        }
+    }
+}
+
+function Build-CertificateChain {
+    param (
+        [System.Security.Cryptography.X509Certificates.X509Certificate2]$LeafCertificate,
+        [System.Security.Cryptography.X509Certificates.X509Certificate2Collection]$IntermediateCertificates,
+        [System.Security.SecureString]$KeystorePassword
+    )
+
+    $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($KeystorePassword)
+    $passwordString = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+
+    try {
+        $chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain
+        $chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck #For the example, avoid checking
+        $chain.ChainPolicy.VerificationFlags = [System.Security.Cryptography.X509Certificates.X509VerificationFlags]::NoFlag #For the example, avoid checking
+        $chain.ChainPolicy.ExtraStore.AddRange($IntermediateCertificates)
+
+        if ($chain.Build($LeafCertificate)) {
+            $chainedCerts = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
+            $chainedCerts.Add($LeafCertificate)
+
+            # Add intermediate and root certificates from the chain
+            foreach ($element in $chain.ChainElements) {
+                 if ($element.Certificate.Thumbprint -ne $LeafCertificate.Thumbprint)
+                 {
+                    $chainedCerts.Add($element.Certificate)
+                 }
+            }
+
+             # Prompt for the output PFX file path
+            $SaveFileDialog = New-Object System.Windows.Forms.SaveFileDialog
+            $SaveFileDialog.Filter = "PFX files (*.pfx)|*.pfx"
+            $SaveFileDialog.Title = "Save Chained Certificate As"
+            $SaveFileDialog.FileName = "chained_certificate.pfx"
+            if ($SaveFileDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+                $outputPath = $SaveFileDialog.FileName
+
+                 # Export the chained certificates to a new PFX file
+                 $pfxBytes = $chainedCerts.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pkcs12, $passwordString)
+                 [System.IO.File]::WriteAllBytes($outputPath, $pfxBytes)
+                Write-Host "Certificate chain saved to: $outputPath" -ForegroundColor Green
+                [System.Windows.Forms.MessageBox]::Show("Certificate chain saved to: $outputPath", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            }
+        }
+        else {
+            Write-Warning "Failed to build a valid certificate chain."
+            [System.Windows.Forms.MessageBox]::Show("Failed to build a valid certificate chain.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            Write-Host "Chain Status:" -ForegroundColor Yellow
+            foreach($status in $chain.ChainStatus){
+                Write-Host ("  " + $status.StatusInformation) -ForegroundColor Yellow
+            }
+        }
+    }
+    catch {
+        Write-Warning "Error building certificate chain: $($_.Exception.Message)"
+        [System.Windows.Forms.MessageBox]::Show("Error building certificate chain: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+    finally{
+        if ($chain -ne $null){
+            $chain.Reset() #reset the chain status
+        }
+        if ($bstr) {
+            [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+        }
+         if($KeystorePassword){
+            $KeystorePassword.Dispose()
+        }
     }
 }
 
@@ -45,7 +178,7 @@ function Get-P7BCertificates {
     }
 }
 
-function Highlight-Certificates {
+function Show-Certificate {
     param (
         [System.Windows.Forms.DataGridView]$DataGridView,
         [System.Collections.ArrayList]$MatchingSKIs
@@ -82,122 +215,8 @@ function Get-CertificateSKI {
 }
 
 
-function Replace-KeystoreCertificate {
-    param(
-        [string]$KeystorePath,
-        [System.Security.SecureString]$KeystorePassword,
-        [System.Security.Cryptography.X509Certificates.X509Certificate2]$OldCertificate,
-        [System.Security.Cryptography.X509Certificates.X509Certificate2]$NewCertificate
-    )
-
-    try {
-        # Reopen the keystore with read/write access
-        $keystore = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
-        $keystore.Import($KeystorePath, $KeystorePassword, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::DefaultKeySet -bor [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet)
-
-        # Find the index of the certificate to be replaced (more robust than relying on selected row index)
-        $indexToReplace = -1
-        for ($i = 0; $i -lt $keystore.Count; $i++) {
-            if ($keystore[$i].Thumbprint -eq $OldCertificate.Thumbprint) {
-                $indexToReplace = $i
-                break
-            }
-        }
-
-        if ($indexToReplace -eq -1) {
-            Write-Warning "The certificate to be replaced was not found in the keystore."
-             [System.Windows.Forms.MessageBox]::Show("The certificate to be replaced was not found in the keystore.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-            return $false
-        }
-        #Remove old certificate
-        $keystore.RemoveAt($indexToReplace)
-
-        # Add the new certificate
-        $keystore.Add($NewCertificate)
-
-        # Save the changes back to the keystore file
-        $keystoreBytes = $keystore.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pkcs12, $KeystorePassword)
-        [System.IO.File]::WriteAllBytes($KeystorePath, $keystoreBytes)
-
-        Write-Host "Certificate replaced successfully." -ForegroundColor Green
-        [System.Windows.Forms.MessageBox]::Show("Certificate replaced successfully.", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-        return $true
-    }
-    catch {
-        Write-Warning "Error replacing certificate: $($_.Exception.Message)"
-        [System.Windows.Forms.MessageBox]::Show("Error replacing certificate: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-        return $false
-    }
-    finally {
-        if($KeystorePassword){
-            $KeystorePassword.Dispose()
-        }
-    }
-}
 
 
-function Build-CertificateChain {
-    param (
-        [System.Security.Cryptography.X509Certificates.X509Certificate2]$LeafCertificate,
-        [System.Security.Cryptography.X509Certificates.X509Certificate2Collection]$IntermediateCertificates,
-        [System.Security.SecureString]$KeystorePassword
-    )
-
-    try {
-        $chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain
-        $chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck #For the example, avoid checking
-        $chain.ChainPolicy.VerificationFlags = [System.Security.Cryptography.X509Certificates.X509VerificationFlags]::NoFlag #For the example, avoid checking
-        $chain.ChainPolicy.ExtraStore.AddRange($IntermediateCertificates)
-
-        if ($chain.Build($LeafCertificate)) {
-            $chainedCerts = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
-            $chainedCerts.Add($LeafCertificate)
-
-            # Add intermediate and root certificates from the chain
-            foreach ($element in $chain.ChainElements) {
-                 if ($element.Certificate.Thumbprint -ne $LeafCertificate.Thumbprint)
-                 {
-                    $chainedCerts.Add($element.Certificate)
-                 }
-            }
-
-             # Prompt for the output PFX file path
-            $SaveFileDialog = New-Object System.Windows.Forms.SaveFileDialog
-            $SaveFileDialog.Filter = "PFX files (*.pfx)|*.pfx"
-            $SaveFileDialog.Title = "Save Chained Certificate As"
-            $SaveFileDialog.FileName = "chained_certificate.pfx"
-            if ($SaveFileDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-                $outputPath = $SaveFileDialog.FileName
-
-                 # Export the chained certificates to a new PFX file
-                 $pfxBytes = $chainedCerts.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pkcs12, $KeystorePassword)
-                 [System.IO.File]::WriteAllBytes($outputPath, $pfxBytes)
-                Write-Host "Certificate chain saved to: $outputPath" -ForegroundColor Green
-                [System.Windows.Forms.MessageBox]::Show("Certificate chain saved to: $outputPath", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-            }
-        }
-        else {
-            Write-Warning "Failed to build a valid certificate chain."
-            [System.Windows.Forms.MessageBox]::Show("Failed to build a valid certificate chain.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-            Write-Host "Chain Status:" -ForegroundColor Yellow
-            foreach($status in $chain.ChainStatus){
-                Write-Host ("  " + $status.StatusInformation) -ForegroundColor Yellow
-            }
-        }
-    }
-    catch {
-        Write-Warning "Error building certificate chain: $($_.Exception.Message)"
-        [System.Windows.Forms.MessageBox]::Show("Error building certificate chain: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-    }
-    finally{
-        if ($chain -ne $null){
-            $chain.Reset() #reset the chain status
-        }
-         if($KeystorePassword){
-            $KeystorePassword.Dispose()
-        }
-    }
-}
 
 function Compare-Certificates {
   $keystoreCerts = $keystoreDataGridView.DataSource
@@ -219,8 +238,8 @@ function Compare-Certificates {
       }
     }
 
-    Highlight-Certificates -DataGridView $keystoreDataGridView -MatchingSKIs $matchingSKIs
-    Highlight-Certificates -DataGridView $p7bDataGridView -MatchingSKIs $matchingSKIs
+    Show-Certificate -DataGridView $keystoreDataGridView -MatchingSKIs $matchingSKIs
+    Show-Certificate -DataGridView $p7bDataGridView -MatchingSKIs $matchingSKIs
   }
 }
 
@@ -345,7 +364,7 @@ $keystoreOpenButton.Add_Click({
         } else {
              #If no P7B opened, simply highlight expired.
               $matchingSkis = New-Object System.Collections.ArrayList #empty list
-              Highlight-Certificates -DataGridView $keystoreDataGridView -MatchingSKIs $matchingSkis
+              Show-Certificate -DataGridView $keystoreDataGridView -MatchingSKIs $matchingSkis
         }
     }
      $replaceButton.Enabled = $false
@@ -381,7 +400,7 @@ $p7bOpenButton.Add_Click({
          else {
             #If no Keystore is opened.
              $matchingSkis = New-Object System.Collections.ArrayList
-             Highlight-Certificates -DataGridView $p7bDataGridView -MatchingSKIs $matchingSkis
+             Show-Certificate -DataGridView $p7bDataGridView -MatchingSKIs $matchingSkis
          }
     }
     $replaceButton.Enabled = $false
@@ -414,7 +433,7 @@ $replaceButton.Add_Click({
         # Get password securely
         $securePassword = Read-Host "Enter keystore password to replace certificate" -AsSecureString
 
-        $replaceResult = Replace-KeystoreCertificate -KeystorePath $keystoreTextBox.Text -KeystorePassword $securePassword -OldCertificate $selectedKeystoreCert -NewCertificate $selectedP7BCert
+        $replaceResult = Set-KeystoreCertificate -KeystorePath $keystoreTextBox.Text -KeystorePassword $securePassword -OldCertificate $selectedKeystoreCert -NewCertificate $selectedP7BCert
         $securePassword.Dispose()
 
         if($replaceResult){
