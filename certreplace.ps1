@@ -92,7 +92,12 @@ function Highlight-Certificates {
         foreach ($keystoreCert in $keystoreCollection) {
             $matchingCert = $null
             if ($p7bCollection) {
-                $matchingCert = $p7bCollection | Where-Object {$_.SubjectKeyIdentifier -eq $keystoreCert.SubjectKeyIdentifier}
+                # Compare SKI by converting byte arrays to strings
+                $keystoreSKI = [System.BitConverter]::ToString($keystoreCert.SubjectKeyIdentifier).Replace("-", "")
+                $matchingCert = $p7bCollection | Where-Object {
+                    $p7bSKI = [System.BitConverter]::ToString($_.SubjectKeyIdentifier).Replace("-", "")
+                    $keystoreSKI -eq $p7bSKI
+                }
             }
             if ($matchingCert) {
                 # Highlight matching SKI by adding "(Match)" to the subject
@@ -113,7 +118,12 @@ function Highlight-Certificates {
         foreach ($p7bCert in $p7bCollection) {
             $matchingCert = $null
             if ($keystoreCollection) {
-                $matchingCert = $keystoreCollection | Where-Object {$_.SubjectKeyIdentifier -eq $p7bCert.SubjectKeyIdentifier}
+                # Compare SKI by converting byte arrays to strings
+                $p7bSKI = [System.BitConverter]::ToString($p7bCert.SubjectKeyIdentifier).Replace("-", "")
+                $matchingCert = $keystoreCollection | Where-Object {
+                    $keystoreSKI = [System.BitConverter]::ToString($_.SubjectKeyIdentifier).Replace("-", "")
+                    $p7bSKI -eq $keystoreSKI
+                }
             }
             if (-not $matchingCert) {
                 $p7bCertificateListBox.Items.Add($p7bCert.Subject)
