@@ -1,3 +1,6 @@
+#Requires -Modules @{ModuleName='WindowsForms';ModuleVersion='5.0.0'}
+#Requires -Modules @{ModuleName='System.Security.Cryptography.X509Certificates'}
+
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Security.Cryptography
@@ -21,11 +24,11 @@ $keystorePathLabel.Location = New-Object System.Drawing.Point(140, 15)
 $keystorePathLabel.Size = New-Object System.Drawing.Size(400, 20)
 $form.Controls.Add($keystorePathLabel)
 
-# Keystore Certificate Listbox
-$keystoreCertificateListBox = New-Object System.Windows.Forms.ListBox
-$keystoreCertificateListBox.Location = New-Object System.Drawing.Point(10, 50)
-$keystoreCertificateListBox.Size = New-Object System.Drawing.Size(580, 500)
-$form.Controls.Add($keystoreCertificateListBox)
+# Keystore Certificate DataGridView
+$keystoreCertificateDataGridView = New-Object System.Windows.Forms.DataGridView
+$keystoreCertificateDataGridView.Location = New-Object System.Drawing.Point(10, 50)
+$keystoreCertificateDataGridView.Size = New-Object System.Drawing.Size(580, 500)
+$form.Controls.Add($keystoreCertificateDataGridView)
 
 # Open P7B Button
 $openP7BButton = New-Object System.Windows.Forms.Button
@@ -40,11 +43,11 @@ $p7bPathLabel.Location = New-Object System.Drawing.Point(730, 15)
 $p7bPathLabel.Size = New-Object System.Drawing.Size(400, 20)
 $form.Controls.Add($p7bPathLabel)
 
-# P7B Certificate Listbox
-$p7bCertificateListBox = New-Object System.Windows.Forms.ListBox
-$p7bCertificateListBox.Location = New-Object System.Drawing.Point(600, 50)
-$p7bCertificateListBox.Size = New-Object System.Drawing.Size(580, 500)
-$form.Controls.Add($p7bCertificateListBox)
+# P7B Certificate DataGridView
+$p7bCertificateDataGridView = New-Object System.Windows.Forms.DataGridView
+$p7bCertificateDataGridView.Location = New-Object System.Drawing.Point(600, 50)
+$p7bCertificateDataGridView.Size = New-Object System.Drawing.Size(580, 500)
+$form.Controls.Add($p7bCertificateDataGridView)
 
 # Replace Button
 $replaceButton = New-Object System.Windows.Forms.Button
@@ -77,56 +80,69 @@ $keystorePath = ""
 $p7bCollection = $null
 $p7bPath = ""
 
-# Function to highlight matching certificates and expired certificates
-function Highlight-Certificates {
-    # Only clear the keystore listbox if a keystore file is loaded
-    if ($keystoreCollection) {
-        $keystoreCertificateListBox.Items.Clear()
-    }
-    # Only clear the P7B listbox if a P7B file is loaded
-    if ($p7bCollection) {
-        $p7bCertificateListBox.Items.Clear()
-    }
+# Function to populate and highlight certificates in DataGridViews
+function Populate-Certificates {
+    # Clear existing data
+    $keystoreCertificateDataGridView.DataSource = $null
+    $p7bCertificateDataGridView.DataSource = $null
 
     if ($keystoreCollection) {
-        foreach ($keystoreCert in $keystoreCollection) {
-            $matchingCert = $null
-            if ($p7bCollection) {
-                # Compare SKI by converting byte arrays to strings
-                $keystoreSKI = [System.BitConverter]::ToString($keystoreCert.SubjectKeyIdentifier).Replace("-", "")
-                $matchingCert = $p7bCollection | Where-Object {
-                    $p7bSKI = [System.BitConverter]::ToString($_.SubjectKeyIdentifier).Replace("-", "")
-                    $keystoreSKI -eq $p7bSKI
-                }
+        # Create a DataTable for keystore certificates
+        $keystoreTable = New-Object System.Data.DataTable
+        $keystoreTable.Columns.Add("Subject", [string])
+        $keystoreTable.Columns.Add("NotAfter", [datetime])
+        $keystoreTable.Columns.Add("SKI", [string])
+
+        foreach ($cert in $keystoreCollection) {
+            $row = $keystoreTable.NewRow()
+            $row.Subject = $cert.Subject
+            $row.NotAfter = $cert.NotAfter
+            $row.SKI = [System.BitConverter]::ToString($cert.SubjectKeyIdentifier).Replace("-", "")
+            $keystoreTable.Rows.Add($row)
+        }
+
+        $keystoreCertificateDataGridView.DataSource = $keystoreTable
+
+        # Color formatting for keystore certificates
+        for ($i = 0; $i -lt $keystoreCertificateDataGridView.Rows.Count; $i++) {
+            if ($keystoreCertificateDataGridView.Rows[$i].Cells["NotAfter"].Value -lt (Get-Date)) {
+                $keystoreCertificateDataGridView.Rows[$i].DefaultCellStyle.ForeColor = 'Red'
             }
-            if ($matchingCert) {
-                # Highlight matching SKI by adding "(Match)" to the subject
-                $keystoreCertificateListBox.Items.Add("$($keystoreCert.Subject) (Match)")
-                $p7bCertificateListBox.Items.Add("$($matchingCert.Subject) (Match)")
-            } else {
-                # Highlight expired certificates with red text
-                if ($keystoreCert.NotAfter -lt (Get-Date)) {
-                    $keystoreCertificateListBox.Items.Add("$($keystoreCert.Subject) (Expired)")
-                } else {
-                    $keystoreCertificateListBox.Items.Add($keystoreCert.Subject)
+            if ($p7bCollection) {
+                $matchingCert = $p7bCollection | Where-Object {
+                    [System.BitConverter]::ToString($_.SubjectKeyIdentifier).Replace("-", "") -eq $keystoreCertificateDataGridView.Rows[$i].Cells["SKI"].Value
+                }
+                if ($matchingCert) {
+                    $keystoreCertificateDataGridView.Rows[$i].DefaultCellStyle.BackColor = 'Green'
                 }
             }
         }
     }
 
     if ($p7bCollection) {
-        foreach ($p7bCert in $p7bCollection) {
-            $matchingCert = $null
+        # Create a DataTable for P7B certificates
+        $p7bTable = New-Object System.Data.DataTable
+        $p7bTable.Columns.Add("Subject", [string])
+        $p7bTable.Columns.Add("SKI", [string])
+
+        foreach ($cert in $p7bCollection) {
+            $row = $p7bTable.NewRow()
+            $row.Subject = $cert.Subject
+            $row.SKI = [System.BitConverter]::ToString($cert.SubjectKeyIdentifier).Replace("-", "")
+            $p7bTable.Rows.Add($row)
+        }
+
+        $p7bCertificateDataGridView.DataSource = $p7bTable
+
+        # Color formatting for P7B certificates (matching SKIs)
+        for ($i = 0; $i -lt $p7bCertificateDataGridView.Rows.Count; $i++) {
             if ($keystoreCollection) {
-                # Compare SKI by converting byte arrays to strings
-                $p7bSKI = [System.BitConverter]::ToString($p7bCert.SubjectKeyIdentifier).Replace("-", "")
                 $matchingCert = $keystoreCollection | Where-Object {
-                    $keystoreSKI = [System.BitConverter]::ToString($_.SubjectKeyIdentifier).Replace("-", "")
-                    $p7bSKI -eq $keystoreSKI
+                    [System.BitConverter]::ToString($_.SubjectKeyIdentifier).Replace("-", "") -eq $p7bCertificateDataGridView.Rows[$i].Cells["SKI"].Value
                 }
-            }
-            if (-not $matchingCert) {
-                $p7bCertificateListBox.Items.Add($p7bCert.Subject)
+                if ($matchingCert) {
+                    $p7bCertificateDataGridView.Rows[$i].DefaultCellStyle.BackColor = 'Green'
+                }
             }
         }
     }
@@ -172,7 +188,6 @@ $openKeystoreButton.Add_Click({
     if ($openKeystoreFileDialog.ShowDialog() -eq "OK") {
         $keystorePath = $openKeystoreFileDialog.FileName
         $keystorePathLabel.Text = $keystorePath
-        $keystoreCertificateListBox.Items.Clear()
 
         try {
             # Prompt for Password
@@ -215,8 +230,8 @@ $openKeystoreButton.Add_Click({
                 try{
                     $keystoreCollection.Import($keystorePath, $password, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::DefaultKeySet)
 
-                    # Call the function to highlight certificates
-                    Highlight-Certificates
+                    # Call the function to populate and highlight certificates
+                    Populate-Certificates
                 }
                 catch{
                   [System.Windows.Forms.MessageBox]::Show("Invalid Password or Keystore", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
@@ -237,14 +252,13 @@ $openP7BButton.Add_Click({
     if ($openP7BFileDialog.ShowDialog() -eq "OK") {
         $p7bPath = $openP7BFileDialog.FileName
         $p7bPathLabel.Text = $p7bPath
-        $p7bCertificateListBox.Items.Clear()
 
         try {
             $p7bCollection = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
             $p7bCollection.Import($p7bPath)
 
-            # Call the function to highlight certificates
-            Highlight-Certificates
+            # Call the function to populate and highlight certificates
+            Populate-Certificates
         }
         catch {
             [System.Windows.Forms.MessageBox]::Show("Error opening P7B file: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
@@ -256,8 +270,8 @@ $openP7BButton.Add_Click({
 
 # Replace Button Click Event
 $replaceButton.Add_Click({
-    $keystoreCertIndex = $keystoreCertificateListBox.SelectedIndices[0]
-    $p7bCertIndex = $p7bCertificateListBox.SelectedIndices[0]
+    $keystoreCertIndex = $keystoreCertificateDataGridView.SelectedRows[0]?.Index
+    $p7bCertIndex = $p7bCertificateDataGridView.SelectedRows[0]?.Index
 
     if ($keystoreCertIndex -ne $null -and $p7bCertIndex -ne $null) {
         $keystoreCert = $keystoreCollection[$keystoreCertIndex]
@@ -269,8 +283,8 @@ $replaceButton.Add_Click({
         # Update the keystore file (requires password)
         $keystoreCollection.Export($keystorePath, $password, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::DefaultKeySet)
 
-        # Refresh the listboxes to reflect the change and highlight matches
-        Highlight-Certificates
+        # Refresh the DataGridViews to reflect the change and highlight matches
+        Populate-Certificates
 
         [System.Windows.Forms.MessageBox]::Show("Certificate replaced successfully!", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
     }
