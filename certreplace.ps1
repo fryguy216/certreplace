@@ -110,18 +110,27 @@ function Show-Certificate {
     )
 
     foreach ($row in $DataGridView.Rows) {
-        if ($row.DataBoundItem -is [System.Security.Cryptography.X509Certificates.X509Certificate2]) {
-            $cert = $row.DataBoundItem
+      if ($row.DataBoundItem) {
+        # Check the type and cast appropriately
+        if ($row.DataBoundItem -is [System.Data.DataRowView]) {
+            $dataRow = $row.DataBoundItem.Row  # Access the underlying DataRow
 
-            if ($cert.NotAfter -lt [DateTime]::Now -or $cert.NotBefore -gt [DateTime]::Now) {
-                $row.DefaultCellStyle.ForeColor = [System.Drawing.Color]::Red
+            # Check for expiration by accessing columns by name
+            if ($dataRow.Table.Columns.Contains("NotAfter") -and $dataRow.Table.Columns.Contains("NotBefore")) {
+                if ($dataRow["NotAfter"] -lt [DateTime]::Now -or $dataRow["NotBefore"] -gt [DateTime]::Now) {
+                    $row.DefaultCellStyle.ForeColor = [System.Drawing.Color]::Red
+                }
             }
 
-            $ski = $cert.Extensions | Where-Object {$_.Oid.Value -eq "2.5.29.14"}
-            if ($ski -and $MatchingSKIs.Contains($ski.Format(0))) {
-                $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::LightGreen
+            # Check for matching SKIs
+            if ($dataRow.Table.Columns.Contains("SKI")) {
+                $ski = $dataRow["SKI"]
+                if ($ski -and $MatchingSKIs.Contains($ski)) {
+                    $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::LightGreen
+                }
             }
         }
+      }
     }
 }
 
@@ -251,35 +260,40 @@ function Build-CertificateChain {
         }
     }
 }
-
 function Compare-Certificates {
-  param (
+    param (
         [System.Windows.Forms.DataGridView]$KeystoreDataGridView,
         [System.Windows.Forms.DataGridView]$P7bDataGridView
     )
-  $keystoreCerts = $KeystoreDataGridView.DataSource
-  $p7bCerts = $P7bDataGridView.DataSource
 
-  if ($keystoreCerts -and $p7bCerts) {
-    $matchingSKIs = New-Object System.Collections.ArrayList
+    # Get the DataTables from the DataGridViews
+    $keystoreData = $KeystoreDataGridView.DataSource
+    $p7bData = $P7bDataGridView.DataSource
 
-    foreach ($keystoreCert in $keystoreCerts) {
-      $keystoreSKI = Get-CertificateSKI $keystoreCert
-      if ($keystoreSKI) {
-        foreach ($p7bCert in $p7bCerts) {
-          $p7bSKI = Get-CertificateSKI $p7bCert
-          if ($p7bSKI -and $keystoreSKI -eq $p7bSKI) {
-            $matchingSKIs.Add($keystoreSKI) | Out-Null
-            break
-          }
+    if ($keystoreData -is [System.Data.DataTable] -and $p7bData -is [System.Data.DataTable]) {
+        $matchingSKIs = New-Object System.Collections.ArrayList
+
+        # Iterate through the rows of the keystore DataTable
+        foreach ($keystoreRow in $keystoreData.Rows) {
+            $keystoreSKI = $keystoreRow["SKI"]
+            if ($keystoreSKI) {
+                # Iterate through the rows of the P7B DataTable
+                foreach ($p7bRow in $p7bData.Rows) {
+                    $p7bSKI = $p7bRow["SKI"]
+                    if ($p7bSKI -and $keystoreSKI -eq $p7bSKI) {
+                        $matchingSKIs.Add($keystoreSKI) | Out-Null
+                        break  # No need to continue inner loop
+                    }
+                }
+            }
         }
-      }
-    }
 
-    Show-Certificate -DataGridView $KeystoreDataGridView -MatchingSKIs $matchingSKIs
-    Show-Certificate -DataGridView $P7bDataGridView -MatchingSKIs $matchingSKIs
-  }
-   else {
+        # Call Show-Certificate with DataGridViews and matching SKIs
+        Show-Certificate -DataGridView $KeystoreDataGridView -MatchingSKIs $matchingSKIs
+        Show-Certificate -DataGridView $P7bDataGridView -MatchingSKIs $matchingSKIs
+    }
+    else {
+        # Clear any previous highlighting if one of the DataGridViews is empty
         Show-Certificate -DataGridView $KeystoreDataGridView -MatchingSKIs @()
         Show-Certificate -DataGridView $P7bDataGridView -MatchingSKIs @()
     }
@@ -367,11 +381,10 @@ $createChainButton.Size = New-Object System.Drawing.Size(150, 30)
 $createChainButton.Text = "Create Chain"
 $createChainButton.Enabled = $false
 
-
 # --- Form Shown Event (CRITICAL FIX) ---
 $form.add_Shown({
     # Use Invoke to ensure UI updates happen on the correct thread.
-    $form.Invoke({
+    $form.Invoke([Action]{
         if ($keystoreDataGridView.Columns.Contains("PrivateKey")) {
             $keystoreDataGridView.Columns["PrivateKey"].Visible = $false
         }
@@ -392,7 +405,30 @@ $keystoreOpenButton.Add_Click({
         $keystoreCerts = Get-KeystoreCertificates -KeystorePath $keystoreTextBox.Text -Password $securePassword
 
         if ($keystoreCerts) {
-            $keystoreDataGridView.DataSource = $keystoreCerts
+              # Create a DataTable for the keystore certificates
+            $keystoreDataTable = New-Object System.Data.DataTable
+            $keystoreDataTable.Columns.Add("Subject", [string]) | Out-Null
+            $keystoreDataTable.Columns.Add("Issuer", [string]) | Out-Null
+            $keystoreDataTable.Columns.Add("NotBefore", [datetime]) | Out-Null
+            $keystoreDataTable.Columns.Add("NotAfter", [datetime]) | Out-Null
+            $keystoreDataTable.Columns.Add("Thumbprint", [string]) | Out-Null
+            $keystoreDataTable.Columns.Add("SerialNumber", [string]) | Out-Null
+            $keystoreDataTable.Columns.Add("SKI", [string]) | Out-Null # Add SKI column
+
+
+            # Populate the DataTable
+            foreach ($cert in $keystoreCerts) {
+                $row = $keystoreDataTable.NewRow()
+                $row.Subject = $cert.Subject
+                $row.Issuer = $cert.Issuer
+                $row.NotBefore = $cert.NotBefore
+                $row.NotAfter = $cert.NotAfter
+                $row.Thumbprint = $cert.Thumbprint
+                $row.SerialNumber = $cert.SerialNumber
+                $row.SKI = Get-CertificateSKI $cert  # Extract and add SKI
+                $keystoreDataTable.Rows.Add($row)
+            }
+            $keystoreDataGridView.DataSource = $keystoreDataTable
         }
         $securePassword.Dispose()
     }
@@ -410,7 +446,28 @@ $p7bBrowseButton.Add_Click({
         $p7bTextBox.Text = $OpenFileDialog.FileName
         $p7bCerts = Get-P7BCertificates -P7BPath $p7bTextBox.Text
         if ($p7bCerts) {
-            $p7bDataGridView.DataSource = $p7bCerts
+            # Create DataTable for P7B certificates
+            $p7bDataTable = New-Object System.Data.DataTable
+            $p7bDataTable.Columns.Add("Subject", [string]) | Out-Null
+            $p7bDataTable.Columns.Add("Issuer", [string]) | Out-Null
+            $p7bDataTable.Columns.Add("NotBefore", [datetime]) | Out-Null
+            $p7bDataTable.Columns.Add("NotAfter", [datetime]) | Out-Null
+            $p7bDataTable.Columns.Add("Thumbprint", [string]) | Out-Null
+            $p7bDataTable.Columns.Add("SerialNumber", [string]) | Out-Null
+            $p7bDataTable.Columns.Add("SKI", [string]) | Out-Null # Add SKI Column
+
+            foreach ($cert in $p7bCerts) {
+                $row = $p7bDataTable.NewRow()
+                $row.Subject = $cert.Subject
+                $row.Issuer = $cert.Issuer
+                $row.NotBefore = $cert.NotBefore
+                $row.NotAfter = $cert.NotAfter
+                $row.Thumbprint = $cert.Thumbprint
+                $row.SerialNumber = $cert.SerialNumber
+                $row.SKI = Get-CertificateSKI $cert # Extract and add SKI.
+                $p7bDataTable.Rows.Add($row)
+            }
+            $p7bDataGridView.DataSource = $p7bDataTable
         }
     }
     $replaceButton.Enabled = $false
@@ -449,7 +506,29 @@ $replaceButton.Add_Click({
                     $updatedKeystoreCerts = Get-KeystoreCertificates -KeystorePath $keystoreTextBox.Text -Password $refreshSecurePassword
                     $refreshSecurePassword.Dispose()
                     if ($updatedKeystoreCerts) {
-                        $keystoreDataGridView.DataSource = $updatedKeystoreCerts
+                         # Create a DataTable for the keystore certificates
+                        $keystoreDataTable = New-Object System.Data.DataTable
+                        $keystoreDataTable.Columns.Add("Subject", [string]) | Out-Null
+                        $keystoreDataTable.Columns.Add("Issuer", [string]) | Out-Null
+                        $keystoreDataTable.Columns.Add("NotBefore", [datetime]) | Out-Null
+                        $keystoreDataTable.Columns.Add("NotAfter", [datetime]) | Out-Null
+                        $keystoreDataTable.Columns.Add("Thumbprint", [string]) | Out-Null
+                        $keystoreDataTable.Columns.Add("SerialNumber", [string]) | Out-Null
+                         $keystoreDataTable.Columns.Add("SKI", [string]) | Out-Null
+
+                        # Populate the DataTable
+                        foreach ($cert in $updatedKeystoreCerts) {
+                            $row = $keystoreDataTable.NewRow()
+                            $row.Subject = $cert.Subject
+                            $row.Issuer = $cert.Issuer
+                            $row.NotBefore = $cert.NotBefore
+                            $row.NotAfter = $cert.NotAfter
+                            $row.Thumbprint = $cert.Thumbprint
+                            $row.SerialNumber = $cert.SerialNumber
+                            $row.SKI = Get-CertificateSKI $cert
+                            $keystoreDataTable.Rows.Add($row)
+                        }
+                        $keystoreDataGridView.DataSource = $keystoreDataTable
                         Compare-Certificates  -KeystoreDataGridView $keystoreDataGridView -P7bDataGridView $p7bDataGridView
                     }
                 }
@@ -539,5 +618,6 @@ $form.Controls.Add($p7bDataGridView)
 $form.Controls.Add($replaceButton)
 $form.Controls.Add($createChainButton)
 $form.Controls.Add($compareButton)
+
 # --- Show the Form ---
 $form.ShowDialog()
