@@ -25,10 +25,12 @@ $form.Controls.Add($browseButton)
 $dataGridView = New-Object System.Windows.Forms.DataGridView
 $dataGridView.Location = New-Object System.Drawing.Point(10, 40)
 $dataGridView.Size = New-Object System.Drawing.Size(760, 500)
-$dataGridView.AutoSizeColumnsMode = [System.Windows.Forms.DataGridViewAutoSizeColumnsMode]::AllCells
 $dataGridView.ReadOnly = $true
 $dataGridView.AllowUserToAddRows = $false
+$dataGridView.AutoSizeColumnsMode = [System.Windows.Forms.DataGridViewAutoSizeColumnsMode]::AllCells  # Set *after* Location/Size
 $form.Controls.Add($dataGridView)
+
+
 
 # Function to load certificates from a P7B file
 function Get-P7BCertificates {
@@ -39,14 +41,17 @@ function Get-P7BCertificates {
     try {
         $p7b = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
         $p7b.Import($P7BPath)
+        Write-Host "Successfully imported P7B file: $P7BPath" -ForegroundColor Green
         return $p7b
     }
     catch {
-        Write-Warning "Error opening P7B file: $($_.Exception.Message)"
-        [System.Windows.Forms.MessageBox]::Show("Error opening P7B file: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        $errorMessage = "Error opening P7B file: $($_.Exception.Message)"
+        Write-Warning $errorMessage
+        [System.Windows.Forms.MessageBox]::Show($errorMessage, "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
         return $null
     }
 }
+
 
 # Event handler for the Browse button
 $browseButton.Add_Click({
@@ -54,13 +59,52 @@ $browseButton.Add_Click({
     $openFileDialog.Filter = "P7B files (*.p7b)|*.p7b"
     if ($openFileDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
         $filePathTextBox.Text = $openFileDialog.FileName
+        Write-Host "Selected file: $($filePathTextBox.Text)"
 
-        # Load and display certificates
+        # Load certificates
         $certificates = Get-P7BCertificates -P7BPath $filePathTextBox.Text
+
         if ($certificates) {
-            # *** KEY CHANGE: Use Select-Object to choose properties ***
-            $displayData = $certificates | Select-Object Subject, Issuer, NotBefore, NotAfter, Thumbprint, SerialNumber
-            $dataGridView.DataSource = $displayData
+            Write-Host "Number of certificates loaded: $($certificates.Count)" -ForegroundColor Green
+
+            try {
+                # Select specific properties to display
+                $displayData = $certificates | Select-Object Subject, Issuer, NotBefore, NotAfter, Thumbprint, SerialNumber
+
+                # Check if $displayData has any content *before* setting DataSource
+                if ($displayData) {
+                    Write-Host "Data to be displayed (first item): $($displayData[0] | Format-List | Out-String)" -ForegroundColor Cyan # Diagnostic output
+
+                    $dataGridView.DataSource = $displayData
+
+					#Check and Log Column Count
+					if($dataGridView.Columns.Count -gt 0) {
+						Write-Host "DataGridView columns populated. Count: $($dataGridView.Columns.Count)" -ForegroundColor Green
+						# Check if a specific column (e.g., "Subject") exists
+						if ($dataGridView.Columns.Contains("Subject")) {
+							Write-Host "Subject column exists." -ForegroundColor Green
+						} else {
+							Write-Warning "Subject column does NOT exist."
+                        }
+					}
+					else
+					{
+						Write-Warning "DataGridView has no columns after setting DataSource."
+					}
+
+                } else {
+                    Write-Warning "Select-Object returned no data."
+                    [System.Windows.Forms.MessageBox]::Show("No certificate data to display.", "Warning", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                }
+            }
+            catch {
+                $errorMessage = "Error displaying certificates: $($_.Exception.Message)"
+                Write-Warning $errorMessage
+                 [System.Windows.Forms.MessageBox]::Show($errorMessage, "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            }
+        }
+        else {
+             Write-Warning "No certificates loaded."
         }
     }
 })
