@@ -134,6 +134,7 @@ $openKeystoreButton.Add_Click({
             [System.Windows.Forms.MessageBox]::Show("Error opening keystore: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
         }
     }
+    $replaceButton.Enabled = ($keystoreCollection -ne $null) -and ($p7bCollection -ne $null)
 })
 
 # Open P7B Button Click Event
@@ -155,10 +156,30 @@ $openP7BButton.Add_Click({
             [System.Windows.Forms.MessageBox]::Show("Error opening P7B file: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
         }
     }
+    $replaceButton.Enabled = ($keystoreCollection -ne $null) -and ($p7bCollection -ne $null)
 })
 
 # Replace Button Click Event
 $replaceButton.Add_Click({
-    if ($keystoreCertificateListBox.SelectedItem -and $p7bCertificateListBox.SelectedItem) {
-        $keystoreCertSubject = $keystoreCertificateListBox.SelectedItem
-        $p7bCertSubject = $p7bCertificateListBox.
+    $keystoreCertSubject = $keystoreCertificateListBox.SelectedItem
+    $p7bCertSubject = $p7bCertificateListBox.SelectedItem
+
+    $keystoreCert = $keystoreCollection | Where-Object {$_.Subject -eq $keystoreCertSubject}
+    $p7bCert = $p7bCollection | Where-Object {$_.Subject -eq $p7bCertSubject}
+
+    if ($keystoreCert -and $p7bCert) {
+        $keystoreCollection.Remove($keystoreCert)
+        $keystoreCollection.Add($p7bCert)
+
+        $keystoreCertificateListBox.Items.Remove($keystoreCertSubject)
+        $keystoreCertificateListBox.Items.Add($p7bCertSubject)
+
+        # Update the keystore file (requires password)
+        $keystoreCollection.Export($keystorePath, $password, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::DefaultKeySet)
+
+        [System.Windows.Forms.MessageBox]::Show("Certificate replaced successfully!", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+    }
+})
+
+$form.Add_Shown({$form.Activate()})
+$form.ShowDialog()
