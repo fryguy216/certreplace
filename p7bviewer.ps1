@@ -27,10 +27,8 @@ $dataGridView.Location = New-Object System.Drawing.Point(10, 40)
 $dataGridView.Size = New-Object System.Drawing.Size(760, 500)
 $dataGridView.ReadOnly = $true
 $dataGridView.AllowUserToAddRows = $false
-$dataGridView.AutoSizeColumnsMode = [System.Windows.Forms.DataGridViewAutoSizeColumnsMode]::AllCells  # Set *after* Location/Size
+$dataGridView.AutoSizeColumnsMode = [System.Windows.Forms.DataGridViewAutoSizeColumnsMode]::AllCells
 $form.Controls.Add($dataGridView)
-
-
 
 # Function to load certificates from a P7B file
 function Get-P7BCertificates {
@@ -52,7 +50,6 @@ function Get-P7BCertificates {
     }
 }
 
-
 # Event handler for the Browse button
 $browseButton.Add_Click({
     $openFileDialog = New-Object System.Windows.Forms.OpenFileDialog
@@ -68,30 +65,43 @@ $browseButton.Add_Click({
             Write-Host "Number of certificates loaded: $($certificates.Count)" -ForegroundColor Green
 
             try {
-                # Select specific properties to display
+                # Select specific properties
                 $displayData = $certificates | Select-Object Subject, Issuer, NotBefore, NotAfter, Thumbprint, SerialNumber
 
-                # Check if $displayData has any content *before* setting DataSource
                 if ($displayData) {
-                    Write-Host "Data to be displayed (first item): $($displayData[0] | Format-List | Out-String)" -ForegroundColor Cyan # Diagnostic output
+                    Write-Host "Data to be displayed (first item): $($displayData[0] | Format-List | Out-String)" -ForegroundColor Cyan
 
-                    $dataGridView.DataSource = $displayData
+                    # Create a DataTable and populate it (more robust)
+                    $dataTable = New-Object System.Data.DataTable
+                    $dataTable.Columns.Add("Subject", [string]) | Out-Null
+                    $dataTable.Columns.Add("Issuer", [string]) | Out-Null
+                    $dataTable.Columns.Add("NotBefore", [datetime]) | Out-Null
+                    $dataTable.Columns.Add("NotAfter", [datetime]) | Out-Null
+                    $dataTable.Columns.Add("Thumbprint", [string]) | Out-Null
+                    $dataTable.Columns.Add("SerialNumber", [string]) | Out-Null
 
-					#Check and Log Column Count
-					if($dataGridView.Columns.Count -gt 0) {
-						Write-Host "DataGridView columns populated. Count: $($dataGridView.Columns.Count)" -ForegroundColor Green
-						# Check if a specific column (e.g., "Subject") exists
-						if ($dataGridView.Columns.Contains("Subject")) {
-							Write-Host "Subject column exists." -ForegroundColor Green
-						} else {
-							Write-Warning "Subject column does NOT exist."
-                        }
-					}
-					else
-					{
-						Write-Warning "DataGridView has no columns after setting DataSource."
-					}
 
+                    foreach ($item in $displayData) {
+                        $row = $dataTable.NewRow()
+                        $row.Subject = $item.Subject
+                        $row.Issuer = $item.Issuer
+                        $row.NotBefore = $item.NotBefore
+                        $row.NotAfter = $item.NotAfter
+                        $row.Thumbprint = $item.Thumbprint
+                        $row.SerialNumber = $item.SerialNumber
+                        $dataTable.Rows.Add($row)
+                    }
+
+                    $dataGridView.DataSource = $dataTable  # Bind the DataTable
+
+
+                    if($dataGridView.Columns.Count -gt 0) {
+                        Write-Host "DataGridView columns populated. Count: $($dataGridView.Columns.Count)" -ForegroundColor Green
+                    }
+                    else
+                    {
+                        Write-Warning "DataGridView has no columns after setting DataSource."
+                    }
                 } else {
                     Write-Warning "Select-Object returned no data."
                     [System.Windows.Forms.MessageBox]::Show("No certificate data to display.", "Warning", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
@@ -100,7 +110,7 @@ $browseButton.Add_Click({
             catch {
                 $errorMessage = "Error displaying certificates: $($_.Exception.Message)"
                 Write-Warning $errorMessage
-                 [System.Windows.Forms.MessageBox]::Show($errorMessage, "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                [System.Windows.Forms.MessageBox]::Show($errorMessage, "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
             }
         }
         else {
@@ -108,6 +118,5 @@ $browseButton.Add_Click({
         }
     }
 })
-
 # Show the form
 $form.ShowDialog()
