@@ -1,6 +1,3 @@
-#Requires -Modules @{ModuleName='WindowsForms';ModuleVersion='5.0.0'}
-#Requires -Modules @{ModuleName='System.Security.Cryptography.X509Certificates'}
-
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Security.Cryptography
@@ -280,20 +277,44 @@ $replaceButton.Add_Click({
         $keystoreCollection.Remove($keystoreCert)
         $keystoreCollection.Add($p7bCert)
 
-        # Update the keystore file (requires password)
-        $keystoreCollection.Export($keystorePath, $password, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::DefaultKeySet)
+        # Prompt for Password before exporting
+        $passwordForm = New-Object System.Windows.Forms.Form
+        $passwordForm.Text = "Enter Keystore Password"
+        $passwordForm.Size = New-Object System.Drawing.Size(300, 150)
+        $passwordForm.StartPosition = "CenterScreen"
+        $passwordForm.FormBorderStyle = "FixedDialog"
+        $passwordForm.MaximizeBox = $false
+        $passwordForm.MinimizeBox = $false
 
-        # Refresh the DataGridViews to reflect the change and highlight matches
-        Populate-Certificates
+        $passwordLabel = New-Object System.Windows.Forms.Label
+        $passwordLabel.Location = New-Object System.Drawing.Point(10, 20)
+        $passwordLabel.Text = "Password:"
+        $passwordForm.Controls.Add($passwordLabel)
 
-        [System.Windows.Forms.MessageBox]::Show("Certificate replaced successfully!", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-    }
-})
+        $passwordTextBox = New-Object System.Windows.Forms.TextBox
+        $passwordTextBox.Location = New-Object System.Drawing.Point(80, 20)
+        $passwordTextBox.Size = New-Object System.Drawing.Size(200, 20)
+        $passwordTextBox.PasswordChar = '*'
+        $passwordForm.Controls.Add($passwordTextBox)
 
-# Chain Button Click Event
-$chainButton.Add_Click({
-    Create-CertificateChain
-})
+        $okButton = New-Object System.Windows.Forms.Button
+        $okButton.Location = New-Object System.Drawing.Point(110, 80)
+        $okButton.Size = New-Object System.Drawing.Size(80, 30)
+        $okButton.Text = "OK"
+        $passwordForm.Controls.Add($okButton)
 
-$form.Add_Shown({$form.Activate()})
-$form.ShowDialog()
+        $passwordForm.Add_Shown({$passwordForm.Activate()})
+
+        $okButton.Add_Click({
+            $passwordForm.DialogResult = "OK"
+            $passwordForm.Close()
+        })
+
+        if ($passwordForm.ShowDialog() -eq "OK") {
+            $password = $passwordTextBox.Text
+
+            # Update the keystore file
+            $keystoreCollection.Export($keystorePath, $password, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::DefaultKeySet)
+
+            # Refresh the DataGridViews to reflect the change and highlight matches
+            Populate-Certificates
