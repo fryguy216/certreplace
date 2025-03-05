@@ -4,6 +4,55 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Runtime.InteropServices
 
+function Get-KeystorePassword {
+    $form = New-Object System.Windows.Forms.Form -Property @{
+        Text          = "Enter Keystore Password"
+        Size          = New-Object System.Drawing.Size(300, 150)
+        StartPosition = "CenterScreen"
+    }
+
+    $label = New-Object System.Windows.Forms.Label -Property @{
+        Location = New-Object System.Drawing.Point(10, 20)
+        Size     = New-Object System.Drawing.Size(280, 20)
+        Text     = "Password:"
+    }
+    $form.Controls.Add($label)
+
+    $textBox = New-Object System.Windows.Forms.TextBox -Property @{
+        Location   = New-Object System.Drawing.Point(10, 40)
+        Size       = New-Object System.Drawing.Size(260, 20)
+        PasswordChar = "*"
+    }
+    $form.Controls.Add($textBox)
+
+    $okButton = New-Object System.Windows.Forms.Button -Property @{
+        Location = New-Object System.Drawing.Point(130, 80)
+        Size     = New-Object System.Drawing.Size(75, 23)
+        Text     = "OK"
+        DialogResult = [System.Windows.Forms.DialogResult]::OK
+    }
+    $form.Controls.Add($okButton)
+    $form.AcceptButton = $okButton
+
+    $cancelButton = New-Object System.Windows.Forms.Button -Property @{
+        Location     = New-Object System.Drawing.Point(210, 80)
+        Size         = New-Object System.Drawing.Size(75, 23)
+        Text         = "Cancel"
+        DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    }
+    $form.Controls.Add($cancelButton)
+    $form.CancelButton = $cancelButton
+
+    $result = $form.ShowDialog()
+
+    if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
+        return $textBox.Text | ConvertTo-SecureString -AsPlainText -Force
+    }
+    else {
+        return $null  # Return null if cancelled
+    }
+}
+
 function Get-KeystoreCertificates {
     param (
         [string]$KeystorePath,
@@ -59,12 +108,10 @@ function Show-Certificate {
         if ($row.DataBoundItem -is [System.Security.Cryptography.X509Certificates.X509Certificate2]) {
             $cert = $row.DataBoundItem
 
-            # Highlight expired certificates
             if ($cert.NotAfter -lt [DateTime]::Now -or $cert.NotBefore -gt [DateTime]::Now) {
                 $row.DefaultCellStyle.ForeColor = [System.Drawing.Color]::Red
             }
 
-            # Highlight matching SKIs
             $ski = $cert.Extensions | Where-Object {$_.Oid.Value -eq "2.5.29.14"}
             if ($ski -and $MatchingSKIs.Contains($ski.Format(0))) {
                 $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::LightGreen
@@ -251,20 +298,8 @@ $keystoreBrowseButton.Location = New-Object System.Drawing.Point(520, 7)
 $keystoreBrowseButton.Size = New-Object System.Drawing.Size(75, 23)
 $keystoreBrowseButton.Text = "Browse..."
 
-
-$keystorePasswordLabel = New-Object System.Windows.Forms.Label
-$keystorePasswordLabel.Location = New-Object System.Drawing.Point(10, 40)
-$keystorePasswordLabel.Size = New-Object System.Drawing.Size(100, 20)
-$keystorePasswordLabel.Text = "Password:"
-
-$keystorePasswordField = New-Object System.Windows.Forms.TextBox
-$keystorePasswordField.Location = New-Object System.Drawing.Point(110, 40)
-$keystorePasswordField.Size = New-Object System.Drawing.Size(200, 20)
-$keystorePasswordField.PasswordChar = "*"
-$keystorePasswordField.Visible = $false
-
 $keystoreOpenButton = New-Object System.Windows.Forms.Button
-$keystoreOpenButton.Location = New-Object System.Drawing.Point(320, 37)
+$keystoreOpenButton.Location = New-Object System.Drawing.Point(110, 40) # Adjusted location
 $keystoreOpenButton.Size = New-Object System.Drawing.Size(75, 23)
 $keystoreOpenButton.Text = "Open"
 
@@ -280,6 +315,7 @@ $keystoreDataGridView.MultiSelect = $false;
 # --- P7B Controls ---
 
 $p7bLabel = New-Object System.Windows.Forms.Label
+$p7bLabel.Location = New-Object System.Drawing.Point(610, 10)
 $p7bLabel.Location = New-Object System.Drawing.Point(610, 10)
 $p7bLabel.Size = New-Object System.Drawing.Size(100, 20)
 $p7bLabel.Text = "P7B File:"
@@ -338,28 +374,31 @@ $keystoreOpenButton.Add_Click({
         return
     }
 
-    $securePassword = Read-Host "Enter keystore password" -AsSecureString
+    # Get password using the dialog
+    $securePassword = Get-KeystorePassword
 
-    $keystoreCerts = Get-KeystoreCertificates -KeystorePath $keystoreTextBox.Text -Password $securePassword
+    if ($securePassword) { # Check if password was provided (not cancelled)
+        $keystoreCerts = Get-KeystoreCertificates -KeystorePath $keystoreTextBox.Text -Password $securePassword
 
-    if ($keystoreCerts) {
-        $keystoreDataGridView.DataSource = $keystoreCerts
-        # PrivateKey visibility handled by DataBindingComplete event
+        if ($keystoreCerts) {
+            $keystoreDataGridView.DataSource = $keystoreCerts
+            # PrivateKey visibility handled by DataBindingComplete event
 
-        if (![string]::IsNullOrEmpty($p7bTextBox.Text)) {
-            $p7bCerts = Get-P7BCertificates -P7BPath $p7bTextBox.Text
-            if ($p7bCerts) {
-                $p7bDataGridView.DataSource = $p7bCerts
-                Compare-Certificates
+            if (![string]::IsNullOrEmpty($p7bTextBox.Text)) {
+                $p7bCerts = Get-P7BCertificates -P7BPath $p7bTextBox.Text
+                if ($p7bCerts) {
+                    $p7bDataGridView.DataSource = $p7bCerts
+                    Compare-Certificates
+                }
+            } else {
+                $matchingSkis = New-Object System.Collections.ArrayList
+                Show-Certificate -DataGridView $keystoreDataGridView -MatchingSKIs $matchingSkis
             }
-        } else {
-            $matchingSkis = New-Object System.Collections.ArrayList
-            Show-Certificate -DataGridView $keystoreDataGridView -MatchingSKIs $matchingSkis
+        $replaceButton.Enabled = $false
+        $createChainButton.Enabled = $false
         }
+         $securePassword.Dispose() #always dispose
     }
-     $replaceButton.Enabled = $false
-     $createChainButton.Enabled = $false
-     $securePassword.Dispose()
 })
 
 $p7bOpenButton.Add_Click({
@@ -374,16 +413,19 @@ $p7bOpenButton.Add_Click({
         $p7bDataGridView.DataSource = $p7bCerts
 
         if (![string]::IsNullOrEmpty($keystoreTextBox.Text)) {
-            $securePassword = Read-Host "Enter keystore password" -AsSecureString
-            $keystoreCerts = Get-KeystoreCertificates -KeystorePath $keystoreTextBox.Text -Password $securePassword
+             # Get password using the dialog
+            $securePassword = Get-KeystorePassword
 
-            if($keystoreCerts)
-            {
-              $keystoreDataGridView.DataSource = $keystoreCerts
-              # PrivateKey visibility handled by DataBindingComplete event
-              Compare-Certificates
+            if($securePassword){
+                $keystoreCerts = Get-KeystoreCertificates -KeystorePath $keystoreTextBox.Text -Password $securePassword
+                if($keystoreCerts)
+                {
+                  $keystoreDataGridView.DataSource = $keystoreCerts
+                  # PrivateKey visibility handled by DataBindingComplete event
+                  Compare-Certificates
+                }
+                 $securePassword.Dispose() #always dispose
             }
-            $securePassword.Dispose()
         }
         else {
             $matchingSkis = New-Object System.Collections.ArrayList
@@ -393,7 +435,6 @@ $p7bOpenButton.Add_Click({
     $replaceButton.Enabled = $false
     $createChainButton.Enabled = $false
 })
-
 
 $keystoreBrowseButton.Add_Click({
     $OpenFileDialog = New-Object System.Windows.Forms.OpenFileDialog
@@ -416,19 +457,26 @@ $replaceButton.Add_Click({
     $selectedP7BCert = $p7bDataGridView.SelectedRows[0].DataBoundItem
 
     if ($selectedKeystoreCert -and $selectedP7BCert) {
-        $securePassword = Read-Host "Enter keystore password to replace certificate" -AsSecureString
+        # Get password using the dialog
+        $securePassword = Get-KeystorePassword
 
-        $replaceResult = Set-KeystoreCertificate -KeystorePath $keystoreTextBox.Text -KeystorePassword $securePassword -OldCertificate $selectedKeystoreCert -NewCertificate $selectedP7BCert
-        $securePassword.Dispose()
+        if ($securePassword) {  # Check if password was provided
+            $replaceResult = Set-KeystoreCertificate -KeystorePath $keystoreTextBox.Text -KeystorePassword $securePassword -OldCertificate $selectedKeystoreCert -NewCertificate $selectedP7BCert
+             $securePassword.Dispose() #always dispose
+            if($replaceResult){
+                # Get password AGAIN for refresh (good practice)
+                $refreshSecurePassword = Get-KeystorePassword
+                if($refreshSecurePassword)
+                {
+                    $updatedKeystoreCerts = Get-KeystoreCertificates -KeystorePath $keystoreTextBox.Text -Password $refreshSecurePassword
+                    $refreshSecurePassword.Dispose()
+                    if ($updatedKeystoreCerts) {
+                        $keystoreDataGridView.DataSource = $updatedKeystoreCerts
+                        # PrivateKey visibility handled by DataBindingComplete event
+                        Compare-Certificates
+                    }
+                }
 
-        if($replaceResult){
-            $refreshSecurePassword = Read-Host "Enter keystore password to refresh view" -AsSecureString
-            $updatedKeystoreCerts = Get-KeystoreCertificates -KeystorePath $keystoreTextBox.Text -Password $refreshSecurePassword
-            $refreshSecurePassword.Dispose()
-            if ($updatedKeystoreCerts) {
-                $keystoreDataGridView.DataSource = $updatedKeystoreCerts
-                # PrivateKey visibility handled by DataBindingComplete event
-                Compare-Certificates
             }
         }
     }
@@ -447,9 +495,13 @@ $createChainButton.Add_Click({
 
     if($selectedKeystoreCert -and $p7bCerts)
     {
-        $securePassword = Read-Host "Enter keystore password to create chain" -AsSecureString
-        Build-CertificateChain -LeafCertificate $selectedKeystoreCert -IntermediateCertificates $p7bCerts -KeystorePassword $securePassword
-        $securePassword.Dispose()
+        # Get password using the dialog
+        $securePassword = Get-KeystorePassword
+        if($securePassword)
+        {
+            Build-CertificateChain -LeafCertificate $selectedKeystoreCert -IntermediateCertificates $p7bCerts -KeystorePassword $securePassword
+             $securePassword.Dispose() #always dispose
+        }
     }
      else
     {
@@ -500,8 +552,7 @@ $p7bDataGridView.add_SelectionChanged({
 $form.Controls.Add($keystoreLabel)
 $form.Controls.Add($keystoreTextBox)
 $form.Controls.Add($keystoreBrowseButton)
-$form.Controls.Add($keystorePasswordLabel)
-$form.Controls.Add($keystorePasswordField)
+# Removed password label and textbox
 $form.Controls.Add($keystoreOpenButton)
 $form.Controls.Add($keystoreDataGridView)
 $form.Controls.Add($p7bLabel)
