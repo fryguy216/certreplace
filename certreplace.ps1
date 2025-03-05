@@ -2,67 +2,31 @@
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
-
-function Get-SecureString {
-    param(
-        [string]$PlainTextPassword
-    )
-    # Try UTF-8 first (most common)
-    $encoding = [System.Text.Encoding]::UTF8
-    $bytes = $encoding.GetBytes($PlainTextPassword)
-    $secureString = New-Object System.Security.SecureString
-    foreach ($byte in $bytes) {
-        $secureString.AppendChar([char]$byte)
-    }
-    $secureString.MakeReadOnly()
-    return $secureString
-}
+Add-Type -AssemblyName System.Runtime.InteropServices # Added for Marshal
 
 function Get-KeystoreCertificates {
     param (
         [string]$KeystorePath,
-        [string]$Password  #  Take plain text password
+        [System.Security.SecureString]$Password
     )
 
     try {
         $keystore = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
-
-        # Try UTF-8 first.  If that fails, we'll loop through other encodings.
-        $securePassword = Get-SecureString -PlainTextPassword $Password
-        $keystore.Import($KeystorePath, $securePassword, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable -bor [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet)
+        $keystore.Import($KeystorePath, $Password, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable -bor [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet)
         return $keystore
-
     }
     catch {
-        # If UTF8 fails, try other common encodings.
-        Write-Warning "Trying alternative encodings for password..."
-        $encodings = @(
-            [System.Text.Encoding]::UTF8
-            [System.Text.Encoding]::Unicode  # UTF-16
-            [System.Text.Encoding]::BigEndianUnicode # UTF-16 Big Endian
-            [System.Text.Encoding]::UTF32
-            [System.Text.Encoding]::ASCII
-        )
-
-        foreach($encoding in $encodings){
-            try{
-               Write-Host "Trying $($encoding.EncodingName)"
-                $securePassword = Get-SecureString -PlainTextPassword $Password
-                $keystore = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
-                $keystore.Import($KeystorePath, $securePassword, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable -bor [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet)
-                Write-Host "Success with $($encoding.EncodingName)" -ForegroundColor Green
-                return $keystore
-            }
-            catch{
-              Write-Warning "Failed with $($encoding.EncodingName) : $($_.Exception.Message)"
-            }
-        }
-
         Write-Warning "Error opening keystore: $($_.Exception.Message)"
         [System.Windows.Forms.MessageBox]::Show("Error opening keystore: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
         return $null
     }
+    finally {
+      if($Password){
+        $Password.Dispose()
+      }
+    }
 }
+
 
 function Get-P7BCertificates {
     param (
@@ -121,16 +85,15 @@ function Get-CertificateSKI {
 function Replace-KeystoreCertificate {
     param(
         [string]$KeystorePath,
-        [string]$KeystorePassword,
+        [System.Security.SecureString]$KeystorePassword,
         [System.Security.Cryptography.X509Certificates.X509Certificate2]$OldCertificate,
         [System.Security.Cryptography.X509Certificates.X509Certificate2]$NewCertificate
     )
 
     try {
-        $securePassword = Get-SecureString -PlainTextPassword $KeystorePassword
         # Reopen the keystore with read/write access
         $keystore = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
-        $keystore.Import($KeystorePath, $securePassword, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::DefaultKeySet -bor [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet)
+        $keystore.Import($KeystorePath, $KeystorePassword, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::DefaultKeySet -bor [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet)
 
         # Find the index of the certificate to be replaced (more robust than relying on selected row index)
         $indexToReplace = -1
@@ -153,7 +116,7 @@ function Replace-KeystoreCertificate {
         $keystore.Add($NewCertificate)
 
         # Save the changes back to the keystore file
-        $keystoreBytes = $keystore.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pkcs12, $securePassword)
+        $keystoreBytes = $keystore.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pkcs12, $KeystorePassword)
         [System.IO.File]::WriteAllBytes($KeystorePath, $keystoreBytes)
 
         Write-Host "Certificate replaced successfully." -ForegroundColor Green
@@ -165,6 +128,11 @@ function Replace-KeystoreCertificate {
         [System.Windows.Forms.MessageBox]::Show("Error replacing certificate: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
         return $false
     }
+    finally {
+        if($KeystorePassword){
+            $KeystorePassword.Dispose()
+        }
+    }
 }
 
 
@@ -172,11 +140,10 @@ function Build-CertificateChain {
     param (
         [System.Security.Cryptography.X509Certificates.X509Certificate2]$LeafCertificate,
         [System.Security.Cryptography.X509Certificates.X509Certificate2Collection]$IntermediateCertificates,
-        [string]$KeystorePassword
+        [System.Security.SecureString]$KeystorePassword
     )
 
     try {
-        $securePassword = Get-SecureString -PlainTextPassword $KeystorePassword
         $chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain
         $chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck #For the example, avoid checking
         $chain.ChainPolicy.VerificationFlags = [System.Security.Cryptography.X509Certificates.X509VerificationFlags]::NoFlag #For the example, avoid checking
@@ -203,7 +170,7 @@ function Build-CertificateChain {
                 $outputPath = $SaveFileDialog.FileName
 
                  # Export the chained certificates to a new PFX file
-                 $pfxBytes = $chainedCerts.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pkcs12, $securePassword)
+                 $pfxBytes = $chainedCerts.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pkcs12, $KeystorePassword)
                  [System.IO.File]::WriteAllBytes($outputPath, $pfxBytes)
                 Write-Host "Certificate chain saved to: $outputPath" -ForegroundColor Green
                 [System.Windows.Forms.MessageBox]::Show("Certificate chain saved to: $outputPath", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
@@ -225,6 +192,9 @@ function Build-CertificateChain {
     finally{
         if ($chain -ne $null){
             $chain.Reset() #reset the chain status
+        }
+         if($KeystorePassword){
+            $KeystorePassword.Dispose()
         }
     }
 }
@@ -277,15 +247,16 @@ $keystoreBrowseButton.Size = New-Object System.Drawing.Size(75, 23)
 $keystoreBrowseButton.Text = "Browse..."
 
 
-$keystorePasswordLabel = New-Object System.Windows.Forms.Label
+$keystorePasswordLabel = New-Object System.Windows.Forms.Label  # Keep the label for context
 $keystorePasswordLabel.Location = New-Object System.Drawing.Point(10, 40)
 $keystorePasswordLabel.Size = New-Object System.Drawing.Size(100, 20)
 $keystorePasswordLabel.Text = "Password:"
 
-$keystorePasswordField = New-Object System.Windows.Forms.TextBox
+$keystorePasswordField = New-Object System.Windows.Forms.TextBox #Keep for create chain
 $keystorePasswordField.Location = New-Object System.Drawing.Point(110, 40)
 $keystorePasswordField.Size = New-Object System.Drawing.Size(200, 20)
 $keystorePasswordField.PasswordChar = "*"
+$keystorePasswordField.Visible = $false # Hide it
 
 $keystoreOpenButton = New-Object System.Windows.Forms.Button
 $keystoreOpenButton.Location = New-Object System.Drawing.Point(320, 37)
@@ -355,7 +326,10 @@ $keystoreOpenButton.Add_Click({
         return
     }
 
-    $keystoreCerts = Get-KeystoreCertificates -KeystorePath $keystoreTextBox.Text -Password $keystorePasswordField.Text
+    # Get password securely
+    $securePassword = Read-Host "Enter keystore password" -AsSecureString
+
+    $keystoreCerts = Get-KeystoreCertificates -KeystorePath $keystoreTextBox.Text -Password $securePassword
 
     if ($keystoreCerts) {
         $keystoreDataGridView.DataSource = $keystoreCerts
@@ -373,10 +347,10 @@ $keystoreOpenButton.Add_Click({
               $matchingSkis = New-Object System.Collections.ArrayList #empty list
               Highlight-Certificates -DataGridView $keystoreDataGridView -MatchingSKIs $matchingSkis
         }
-         $replaceButton.Enabled = $false
-         $createChainButton.Enabled = $false
     }
-
+     $replaceButton.Enabled = $false
+     $createChainButton.Enabled = $false
+     $securePassword.Dispose() # Dispose immediately after use
 })
 
 $p7bOpenButton.Add_Click({
@@ -392,7 +366,9 @@ $p7bOpenButton.Add_Click({
 
         # Check if a keystore file is already open and compare
         if (![string]::IsNullOrEmpty($keystoreTextBox.Text)) {
-              $keystoreCerts = Get-KeystoreCertificates -KeystorePath $keystoreTextBox.Text -Password $keystorePasswordField.Text
+              # Get password securely
+              $securePassword = Read-Host "Enter keystore password" -AsSecureString
+              $keystoreCerts = Get-KeystoreCertificates -KeystorePath $keystoreTextBox.Text -Password $securePassword
 
               if($keystoreCerts)
               {
@@ -400,6 +376,7 @@ $p7bOpenButton.Add_Click({
                 $keystoreDataGridView.Columns["PrivateKey"].Visible = $false # Hide the private key
                 Compare-Certificates
               }
+              $securePassword.Dispose() # Dispose immediately after use
         }
          else {
             #If no Keystore is opened.
@@ -407,8 +384,8 @@ $p7bOpenButton.Add_Click({
              Highlight-Certificates -DataGridView $p7bDataGridView -MatchingSKIs $matchingSkis
          }
     }
-     $replaceButton.Enabled = $false
-     $createChainButton.Enabled = $false
+    $replaceButton.Enabled = $false
+    $createChainButton.Enabled = $false
 })
 
 
@@ -434,49 +411,22 @@ $replaceButton.Add_Click({
     $selectedP7BCert = $p7bDataGridView.SelectedRows[0].DataBoundItem
 
     if ($selectedKeystoreCert -and $selectedP7BCert) {
-        # Prompt for keystore password again (for security)
-        $passwordForm = New-Object System.Windows.Forms.Form
-        $passwordForm.Text = "Enter Keystore Password"
-        $passwordForm.Size = New-Object System.Drawing.Size(300, 150)
-        $passwordForm.StartPosition = "CenterScreen"
+        # Get password securely
+        $securePassword = Read-Host "Enter keystore password to replace certificate" -AsSecureString
 
-        $passwordLabel = New-Object System.Windows.Forms.Label
-        $passwordLabel.Location = New-Object System.Drawing.Point(10, 20)
-        $passwordLabel.Size = New-Object System.Drawing.Size(80, 20)
-        $passwordLabel.Text = "Password:"
-        $passwordForm.Controls.Add($passwordLabel)
+        $replaceResult = Replace-KeystoreCertificate -KeystorePath $keystoreTextBox.Text -KeystorePassword $securePassword -OldCertificate $selectedKeystoreCert -NewCertificate $selectedP7BCert
+        $securePassword.Dispose()
 
-        $passwordBox = New-Object System.Windows.Forms.TextBox
-        $passwordBox.Location = New-Object System.Drawing.Point(100, 20)
-        $passwordBox.Size = New-Object System.Drawing.Size(150, 20)
-        $passwordBox.PasswordChar = "*"
-        $passwordForm.Controls.Add($passwordBox)
-
-        $okButton = New-Object System.Windows.Forms.Button
-        $okButton.Location = New-Object System.Drawing.Point(100, 60)
-        $okButton.Size = New-Object System.Drawing.Size(75, 23)
-        $okButton.Text = "OK"
-        $okButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
-        $passwordForm.Controls.Add($okButton)
-        $passwordForm.AcceptButton = $okButton;
-
-        $cancelButton = New-Object System.Windows.Forms.Button
-        $cancelButton.Location = New-Object System.Drawing.Point(180, 60)
-        $cancelButton.Size = New-Object System.Drawing.Size(75, 23)
-        $cancelButton.Text = "Cancel"
-        $cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-        $passwordForm.Controls.Add($cancelButton)
-
-
-        if ($passwordForm.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-             Replace-KeystoreCertificate -KeystorePath $keystoreTextBox.Text -KeystorePassword $passwordBox.Text -OldCertificate $selectedKeystoreCert -NewCertificate $selectedP7BCert
-
+        if($replaceResult){
             # Refresh the keystore DataGridView
-            $updatedKeystoreCerts = Get-KeystoreCertificates -KeystorePath $keystoreTextBox.Text -Password $keystorePasswordField.Text
+            # Get password securely
+            $refreshSecurePassword = Read-Host "Enter keystore password to refresh view" -AsSecureString
+            $updatedKeystoreCerts = Get-KeystoreCertificates -KeystorePath $keystoreTextBox.Text -Password $refreshSecurePassword
+            $refreshSecurePassword.Dispose() #Dispose
             if ($updatedKeystoreCerts) {
                 $keystoreDataGridView.DataSource = $updatedKeystoreCerts
                 $keystoreDataGridView.Columns["PrivateKey"].Visible = $false
-                 Compare-Certificates # Re-compare after replacement
+                Compare-Certificates # Re-compare after replacement
             }
         }
     }
@@ -496,7 +446,10 @@ $createChainButton.Add_Click({
 
     if($selectedKeystoreCert -and $p7bCerts)
     {
-        Build-CertificateChain -LeafCertificate $selectedKeystoreCert -IntermediateCertificates $p7bCerts -KeystorePassword $keystorePasswordField.Text
+        # Get password securely
+        $securePassword = Read-Host "Enter keystore password to create chain" -AsSecureString
+        Build-CertificateChain -LeafCertificate $selectedKeystoreCert -IntermediateCertificates $p7bCerts -KeystorePassword $securePassword
+        $securePassword.Dispose() #Dispose
     }
      else
     {
