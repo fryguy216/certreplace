@@ -4,6 +4,8 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Runtime.InteropServices
 
+# --- Functions ---
+
 function Get-KeystorePassword {
     $form = New-Object System.Windows.Forms.Form -Property @{
         Text          = "Enter Keystore Password"
@@ -46,11 +48,16 @@ function Get-KeystorePassword {
     $result = $form.ShowDialog()
 
     if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
-        return $textBox.Text | ConvertTo-SecureString -AsPlainText -Force
+        $securePassword = New-Object System.Security.SecureString
+        foreach ($char in $textBox.Text.ToCharArray()) {
+            $securePassword.AppendChar($char)
+        }
+        return $securePassword
     }
     else {
         return $null  # Return null if cancelled
     }
+    $form.Dispose()
 }
 
 function Get-KeystoreCertificates {
@@ -276,6 +283,8 @@ function Compare-Certificates {
   }
 }
 
+# --- GUI Setup ---
+
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Keystore and P7B Certificate Comparator"
 $form.Size = New-Object System.Drawing.Size(1200, 500)
@@ -299,7 +308,7 @@ $keystoreBrowseButton.Size = New-Object System.Drawing.Size(75, 23)
 $keystoreBrowseButton.Text = "Browse..."
 
 $keystoreOpenButton = New-Object System.Windows.Forms.Button
-$keystoreOpenButton.Location = New-Object System.Drawing.Point(110, 40) # Adjusted location
+$keystoreOpenButton.Location = New-Object System.Drawing.Point(110, 40)  # Adjusted location
 $keystoreOpenButton.Size = New-Object System.Drawing.Size(75, 23)
 $keystoreOpenButton.Text = "Open"
 
@@ -315,7 +324,6 @@ $keystoreDataGridView.MultiSelect = $false;
 # --- P7B Controls ---
 
 $p7bLabel = New-Object System.Windows.Forms.Label
-$p7bLabel.Location = New-Object System.Drawing.Point(610, 10)
 $p7bLabel.Location = New-Object System.Drawing.Point(610, 10)
 $p7bLabel.Size = New-Object System.Drawing.Size(100, 20)
 $p7bLabel.Text = "P7B File:"
@@ -435,6 +443,7 @@ $p7bOpenButton.Add_Click({
     $replaceButton.Enabled = $false
     $createChainButton.Enabled = $false
 })
+
 
 $keystoreBrowseButton.Add_Click({
     $OpenFileDialog = New-Object System.Windows.Forms.OpenFileDialog
