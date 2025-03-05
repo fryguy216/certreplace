@@ -282,10 +282,8 @@ function Compare-Certificates {
    else {
         Show-Certificate -DataGridView $KeystoreDataGridView -MatchingSKIs @()
         Show-Certificate -DataGridView $P7bDataGridView -MatchingSKIs @()
-        }
+    }
 }
-
-# --- GUI Setup ---
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Keystore and P7B Certificate Comparator"
@@ -369,11 +367,15 @@ $createChainButton.Size = New-Object System.Drawing.Size(150, 30)
 $createChainButton.Text = "Create Chain"
 $createChainButton.Enabled = $false
 
-# --- DataBindingComplete event for keystoreDataGridView ---
-$keystoreDataGridView.add_DataBindingComplete({
-    if ($keystoreDataGridView.Columns.Contains("PrivateKey")) {
-        $keystoreDataGridView.Columns["PrivateKey"].Visible = $false
-    }
+
+# --- Form Shown Event (CRITICAL FIX) ---
+$form.add_Shown({
+    # Use Invoke to ensure UI updates happen on the correct thread.
+    $form.Invoke({
+        if ($keystoreDataGridView.Columns.Contains("PrivateKey")) {
+            $keystoreDataGridView.Columns["PrivateKey"].Visible = $false
+        }
+    })
 })
 
 # --- Event Handlers ---
@@ -537,6 +539,5 @@ $form.Controls.Add($p7bDataGridView)
 $form.Controls.Add($replaceButton)
 $form.Controls.Add($createChainButton)
 $form.Controls.Add($compareButton)
-
 # --- Show the Form ---
 $form.ShowDialog()
