@@ -95,7 +95,7 @@ function Get-P7BCertificates {
 
     try {
         $p7b = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
-        $p7b.Import($P7BPath) # P7B doesn't have password.
+        $p7b.Import($P7BPath)
         return $p7b
     }
     catch {
@@ -123,10 +123,9 @@ function Show-Certificate {
             if ($ski -and $MatchingSKIs.Contains($ski.Format(0))) {
                 $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::LightGreen
             }
-
-            $DataGridView.ClearSelection()
         }
     }
+    # No ClearSelection here, to preserve user's selection
 }
 
 function Get-CertificateSKI {
@@ -138,7 +137,6 @@ function Get-CertificateSKI {
     }
     return $null
 }
-
 
 function Set-KeystoreCertificate {
     param(
@@ -191,7 +189,6 @@ function Set-KeystoreCertificate {
         }
     }
 }
-
 
 function Build-CertificateChain {
     param (
@@ -259,8 +256,12 @@ function Build-CertificateChain {
 }
 
 function Compare-Certificates {
-  $keystoreCerts = $keystoreDataGridView.DataSource
-  $p7bCerts = $p7bDataGridView.DataSource
+  param (
+        [System.Windows.Forms.DataGridView]$KeystoreDataGridView,
+        [System.Windows.Forms.DataGridView]$P7bDataGridView
+    )
+  $keystoreCerts = $KeystoreDataGridView.DataSource
+  $p7bCerts = $P7bDataGridView.DataSource
 
   if ($keystoreCerts -and $p7bCerts) {
     $matchingSKIs = New-Object System.Collections.ArrayList
@@ -278,9 +279,14 @@ function Compare-Certificates {
       }
     }
 
-    Show-Certificate -DataGridView $keystoreDataGridView -MatchingSKIs $matchingSKIs
-    Show-Certificate -DataGridView $p7bDataGridView -MatchingSKIs $matchingSKIs
+    Show-Certificate -DataGridView $KeystoreDataGridView -MatchingSKIs $matchingSKIs
+    Show-Certificate -DataGridView $P7bDataGridView -MatchingSKIs $matchingSKIs
   }
+   else {
+        # Clear any previous highlighting if one of the DataGridViews is empty
+        Show-Certificate -DataGridView $KeystoreDataGridView -MatchingSKIs @()
+        Show-Certificate -DataGridView $P7bDataGridView -MatchingSKIs @()
+    }
 }
 
 # --- GUI Setup ---
@@ -308,7 +314,7 @@ $keystoreBrowseButton.Size = New-Object System.Drawing.Size(75, 23)
 $keystoreBrowseButton.Text = "Browse..."
 
 $keystoreOpenButton = New-Object System.Windows.Forms.Button
-$keystoreOpenButton.Location = New-Object System.Drawing.Point(110, 40)  # Adjusted location
+$keystoreOpenButton.Location = New-Object System.Drawing.Point(110, 40)
 $keystoreOpenButton.Size = New-Object System.Drawing.Size(75, 23)
 $keystoreOpenButton.Text = "Open"
 
@@ -334,7 +340,7 @@ $p7bTextBox.Size = New-Object System.Drawing.Size(400, 20)
 $p7bTextBox.ReadOnly = $true
 
 $p7bBrowseButton = New-Object System.Windows.Forms.Button
-$p7bBrowseButton.Location = New-Object System.Drawing.Point(710, 37) # Adjusted for no Open button
+$p7bBrowseButton.Location = New-Object System.Drawing.Point(710, 37)
 $p7bBrowseButton.Size = New-Object System.Drawing.Size(75, 23)
 $p7bBrowseButton.Text = "Browse..."
 
@@ -349,15 +355,20 @@ $p7bDataGridView.SelectionMode = "FullRowSelect"
 $p7bDataGridView.MultiSelect = $false;
 
 # --- Action Buttons ---
+$compareButton = New-Object System.Windows.Forms.Button
+$compareButton.Location = New-Object System.Drawing.Point(10, 380)
+$compareButton.Size = New-Object System.Drawing.Size(150, 30)
+$compareButton.Text = "Compare Certificates"
+$compareButton.Enabled = $false # Initially disabled.
 
 $replaceButton = New-Object System.Windows.Forms.Button
-$replaceButton.Location = New-Object System.Drawing.Point(10, 380)
+$replaceButton.Location = New-Object System.Drawing.Point(170, 380)  # Adjusted location
 $replaceButton.Size = New-Object System.Drawing.Size(150, 30)
 $replaceButton.Text = "Replace Certificate"
 $replaceButton.Enabled = $false
 
 $createChainButton = New-Object System.Windows.Forms.Button
-$createChainButton.Location = New-Object System.Drawing.Point(170, 380)
+$createChainButton.Location = New-Object System.Drawing.Point(330, 380) # Adjusted location
 $createChainButton.Size = New-Object System.Drawing.Size(150, 30)
 $createChainButton.Text = "Create Chain"
 $createChainButton.Enabled = $false
@@ -384,56 +395,31 @@ $keystoreOpenButton.Add_Click({
 
         if ($keystoreCerts) {
             $keystoreDataGridView.DataSource = $keystoreCerts
-
-            if (![string]::IsNullOrEmpty($p7bTextBox.Text)) {
-                $p7bCerts = Get-P7BCertificates -P7BPath $p7bTextBox.Text
-                if ($p7bCerts) {
-                    $p7bDataGridView.DataSource = $p7bCerts
-                    Compare-Certificates
-                }
-            } else {
-                $matchingSkis = New-Object System.Collections.ArrayList
-                Show-Certificate -DataGridView $keystoreDataGridView -MatchingSKIs $matchingSkis
-            }
         }
         $securePassword.Dispose()
     }
+     # Disable buttons until Compare is clicked
     $replaceButton.Enabled = $false
     $createChainButton.Enabled = $false
+    $compareButton.Enabled = ($keystoreDataGridView.DataSource -ne $null) -and ($p7bDataGridView.DataSource -ne $null)
 
 })
+
 
 $p7bBrowseButton.Add_Click({
     $OpenFileDialog = New-Object System.Windows.Forms.OpenFileDialog
     $OpenFileDialog.Filter = "P7B files (*.p7b)|*.p7b"
     if ($OpenFileDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
         $p7bTextBox.Text = $OpenFileDialog.FileName
-        # Load certificates directly after selecting the file
         $p7bCerts = Get-P7BCertificates -P7BPath $p7bTextBox.Text
         if ($p7bCerts) {
             $p7bDataGridView.DataSource = $p7bCerts
-
-            if (![string]::IsNullOrEmpty($keystoreTextBox.Text)) {
-                $securePassword = Get-KeystorePassword
-
-                if($securePassword){
-                    $keystoreCerts = Get-KeystoreCertificates -KeystorePath $keystoreTextBox.Text -Password $securePassword
-                    if($keystoreCerts)
-                    {
-                      $keystoreDataGridView.DataSource = $keystoreCerts
-                      Compare-Certificates
-                    }
-                    $securePassword.Dispose()
-                }
-            }
-            else {
-                $matchingSkis = New-Object System.Collections.ArrayList
-                Show-Certificate -DataGridView $p7bDataGridView -MatchingSKIs $matchingSkis
-            }
         }
     }
-    $replaceButton.Enabled = $false;
-    $createChainButton.Enabled = $false;
+     # Disable buttons until Compare is clicked
+    $replaceButton.Enabled = $false
+    $createChainButton.Enabled = $false
+    $compareButton.Enabled = ($keystoreDataGridView.DataSource -ne $null) -and ($p7bDataGridView.DataSource -ne $null)
 })
 
 
@@ -443,6 +429,10 @@ $keystoreBrowseButton.Add_Click({
     if ($OpenFileDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
         $keystoreTextBox.Text = $OpenFileDialog.FileName
     }
+})
+
+$compareButton.Add_Click({
+    Compare-Certificates -KeystoreDataGridView $keystoreDataGridView -P7bDataGridView $p7bDataGridView
 })
 
 
@@ -464,7 +454,7 @@ $replaceButton.Add_Click({
                     $refreshSecurePassword.Dispose()
                     if ($updatedKeystoreCerts) {
                         $keystoreDataGridView.DataSource = $updatedKeystoreCerts
-                        Compare-Certificates
+                        Compare-Certificates  -KeystoreDataGridView $keystoreDataGridView -P7bDataGridView $p7bDataGridView # Re-compare after replacing
                     }
                 }
 
@@ -478,6 +468,7 @@ $replaceButton.Add_Click({
 
      $replaceButton.Enabled = $false
      $createChainButton.Enabled = $false
+     $compareButton.Enabled = ($keystoreDataGridView.DataSource -ne $null) -and ($p7bDataGridView.DataSource -ne $null)
 })
 
 $createChainButton.Add_Click({
@@ -500,6 +491,7 @@ $createChainButton.Add_Click({
 
     $replaceButton.Enabled = $false
     $createChainButton.Enabled = $false
+    $compareButton.Enabled = ($keystoreDataGridView.DataSource -ne $null) -and ($p7bDataGridView.DataSource -ne $null)
 
 })
 
@@ -547,10 +539,10 @@ $form.Controls.Add($keystoreDataGridView)
 $form.Controls.Add($p7bLabel)
 $form.Controls.Add($p7bTextBox)
 $form.Controls.Add($p7bBrowseButton)
-# Removed: $form.Controls.Add($p7bOpenButton)  <- No longer needed
 $form.Controls.Add($p7bDataGridView)
 $form.Controls.Add($replaceButton)
 $form.Controls.Add($createChainButton)
+$form.Controls.Add($compareButton) # Add the Compare button
 
 # --- Show the Form ---
 $form.ShowDialog()
