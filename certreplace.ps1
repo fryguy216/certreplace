@@ -243,18 +243,17 @@ function Build-CertificateChain {
         }
     }
 }
-
 function Compare-Certificates {
-    param (
+  param (
         [System.Windows.Forms.DataGridView]$KeystoreDataGridView,
         [System.Windows.Forms.DataGridView]$P7bDataGridView
     )
 
-    # Clear previous messages
-    $infoMessages.Clear()
+  # Clear previous messages
+  $infoMessages.Clear()
 
-    $keystoreData = $KeystoreDataGridView.DataSource
-    $p7bData = $P7bDataGridView.DataSource
+  $keystoreData = $KeystoreDataGridView.DataSource
+  $p7bData = $P7bDataGridView.DataSource
 
     if ($keystoreData -is [System.Data.DataTable] -and $p7bData -is [System.Data.DataTable]) {
         # --- Check for duplicate SKIs in keystore ---
@@ -331,7 +330,7 @@ function Compare-Certificates {
         }
     }
 
-    # Update the information textbox
+        # Update the information textbox
     $infoTextBox.Text = [string]::Join([Environment]::NewLine, $infoMessages)
 }
 
@@ -659,7 +658,7 @@ $p7bBrowseButton.Add_Click({
          $infoTextBox.Visible = ($keystoreDataGridView.DataSource -ne $null) -and ($p7bDataGridView.DataSource -ne $null)
     }
     $replaceButton.Enabled = ($keystoreDataGridView.DataSource -ne $null) -and ($p7bDataGridView.DataSource -ne $null)
-    $createChainButton.Enabled = ($keystoreDataGridView.DataSource -ne $null) -and ($p7bDataGridView.DataSource -ne $null)
+    $createChainButton.Enabled = ($keystoreDataGridView.DataSource -ne $null -and ($p7bDataGridView.DataSource -ne $null)
     $cleanupButton.Enabled = ($keystoreDataGridView.DataSource -ne $null)
 })
 
@@ -733,7 +732,7 @@ $createChainButton.Add_Click({
     $selectedKeystoreCert = $keystoreCertificates[$selectedKeystoreIndex]
     $p7bCerts = $p7bDataGridView.DataSource
 
-    if($selectedKeystoreCert -and $p7bCerts is [System.Data.DataTable])
+    if($selectedKeystoreCert -and $p7bCerts -is [System.Data.DataTable])
     {
         $intermediateCerts = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
         foreach($cert in $p7bCertificates)
