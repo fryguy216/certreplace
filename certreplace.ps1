@@ -9,8 +9,6 @@ $keystoreCertificates = New-Object System.Collections.ArrayList
 $p7bCertificates = New-Object System.Collections.ArrayList
 $infoMessages = New-Object System.Collections.ArrayList #For info messages.
 
-# --- Functions ---
-
 function Get-KeystorePassword {
     $form = New-Object System.Windows.Forms.Form -Property @{
         Text          = "Enter Keystore Password"
@@ -243,6 +241,7 @@ function Build-CertificateChain {
         }
     }
 }
+
 function Compare-Certificates {
   param (
         [System.Windows.Forms.DataGridView]$KeystoreDataGridView,
@@ -305,21 +304,9 @@ function Compare-Certificates {
                 $keystoreSKI = $keystoreRow["SKI"]
                 # Find the personal certificate
                 if ($keystoreSKI) {
-                   $personalCert = $keystoreCertificates | Where-Object { (Get-CertificateSKI $_) -eq $keystoreSKI}
+                   $personalCert = $keystoreCertificates.Where({(Get-CertificateSKI $_) -eq $keystoreSKI}, 'First')
                    if($personalCert){
-                        $chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain
-                        $chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
-                        $chain.ChainPolicy.VerificationFlags = [System.Security.Cryptography.X509Certificates.X509VerificationFlags]::NoFlag
-                        $intermediateCerts = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
-                         foreach($cert in $p7bCertificates)
-                        {
-                            $intermediateCerts.Add($cert)
-                        }
-                        $chain.ChainPolicy.ExtraStore.AddRange($intermediateCerts)
-
-                        if($chain.Build($personalCert)){
-                             if($chain.ChainElements.Count -gt 1){
-                                $infoMessages.Add("P7B contains newer certificates than a personal certificate in the keystore, chain rebuild recommended.") | Out-Null;
+                        $chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain$infoMessages.Add("P7B contains newer certificates than a personal certificate in the keystore, chain rebuild recommended.") | Out-Null;
                                 break; #exit on first match
                              }
                         }
@@ -330,7 +317,7 @@ function Compare-Certificates {
         }
     }
 
-        # Update the information textbox
+    # Update the information textbox
     $infoTextBox.Text = [string]::Join([Environment]::NewLine, $infoMessages)
 }
 
@@ -382,12 +369,12 @@ function Cleanup-Keystore {
         foreach ($certToRemove in $certsToRemove) {
              Write-Host "Removing duplicate certificate (by SKI): $($certToRemove.Subject)" -ForegroundColor Yellow
             $keystore.Remove($certToRemove)
-            $KeystoreCertificates.Remove($certToRemove) | Out-Null # Also remove from ArrayList
+            $KeystoreCertificates.Remove($certToRemove) | Out-Null
         }
 
 
         # --- 2. Remove and Replace with P7B Matches ---
-        $certsToRemove = New-Object System.Collections.ArrayList  # Reuse the list
+        $certsToRemove = New-Object System.Collections.ArrayList
         foreach ($keystoreCert in $KeystoreCertificates) {
             $keystoreSKI = Get-CertificateSKI $keystoreCert
             foreach($p7bCert in $P7BCertificates){
@@ -410,7 +397,7 @@ function Cleanup-Keystore {
                         $P7bCertificates.Add($p7bCert) | Out-Null
                     }
 
-                    break  # Important: Stop inner loop after finding a match
+                    break
                 }
             }
         }
@@ -422,7 +409,7 @@ function Cleanup-Keystore {
             $chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
             $chain.ChainPolicy.VerificationFlags = [System.Security.Cryptography.X509Certificates.X509VerificationFlags]::NoFlag
             $intermediateCerts = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
-             foreach($cert in $P7BCertificates)
+             foreach($cert in $P7bCertificates)
             {
                 $intermediateCerts.Add($cert)
             }
@@ -431,9 +418,9 @@ function Cleanup-Keystore {
             if($chain.Build($personalCert)){
                 #Chain is Valid, proceed
                 if($chain.ChainElements.Count -gt 1){
-                    #It's a real chain, remove from keystore.  The last element is the root, don't remove it.
+                    #It's a real chain, remove from keystore.
                      Write-Host "Rebuilding Chain For: $($personalCert.Subject)" -ForegroundColor Yellow
-                    for($i = 1; $i -lt $chain.ChainElements.Count - 1; $i++){
+                    for($i = 1; $i -lt $chain.ChainElements.Count; $i++){ # The last element is the root, don't remove it.
                         $certToRemove = $chain.ChainElements[$i].Certificate
                         $keystore.Remove($certToRemove)
                         $KeystoreCertificates.Remove($certToRemove) | Out-Null
@@ -477,6 +464,7 @@ $form.Size = New-Object System.Drawing.Size(1250, 600)
 $form.StartPosition = "CenterScreen"
 
 # --- Keystore Controls ---
+
 $keystoreLabel = New-Object System.Windows.Forms.Label
 $keystoreLabel.Location = New-Object System.Drawing.Point(10, 10)
 $keystoreLabel.Size = New-Object System.Drawing.Size(100, 20)
@@ -502,11 +490,12 @@ $keystoreDataGridView.Location = New-Object System.Drawing.Point(10, 70)
 $keystoreDataGridView.Size = New-Object System.Drawing.Size(600, 300)
 $keystoreDataGridView.AutoSizeColumnsMode = [System.Windows.Forms.DataGridViewAutoSizeColumnsMode]::AllCells
 $keystoreDataGridView.AllowUserToAddRows = $false
-$keystoreDataGridView.ReadOnly = $true
+$keystoreDataGridView.ReadOnly = $true;
 $keystoreDataGridView.SelectionMode = "FullRowSelect"
-$keystoreDataGridView.MultiSelect = $false
+$keystoreDataGridView.MultiSelect = $false;
 
 # --- P7B Controls ---
+
 $p7bLabel = New-Object System.Windows.Forms.Label
 $p7bLabel.Location = New-Object System.Drawing.Point(620, 10)
 $p7bLabel.Size = New-Object System.Drawing.Size(100, 20)
@@ -522,14 +511,15 @@ $p7bBrowseButton.Location = New-Object System.Drawing.Point(720, 37)
 $p7bBrowseButton.Size = New-Object System.Drawing.Size(75, 23)
 $p7bBrowseButton.Text = "Browse..."
 
+
 $p7bDataGridView = New-Object System.Windows.Forms.DataGridView
 $p7bDataGridView.Location = New-Object System.Drawing.Point(620, 70)
 $p7bDataGridView.Size = New-Object System.Drawing.Size(600, 300)
 $p7bDataGridView.AutoSizeColumnsMode = [System.Windows.Forms.DataGridViewAutoSizeColumnsMode]::AllCells
 $p7bDataGridView.AllowUserToAddRows = $false
-$p7bDataGridView.ReadOnly = $true
+$p7bDataGridView.ReadOnly = $true;
 $p7bDataGridView.SelectionMode = "FullRowSelect"
-$p7bDataGridView.MultiSelect = $false
+$p7bDataGridView.MultiSelect = $false;
 
 # --- Action Buttons ---
 $replaceButton = New-Object System.Windows.Forms.Button
@@ -565,9 +555,6 @@ $form.add_Shown({
         if ($keystoreDataGridView.Columns.Contains("PrivateKey")) {
             $keystoreDataGridView.Columns["PrivateKey"].Visible = $false
         }
-        # No need to enable/disable compareButton here
-         $replaceButton.Enabled = ($keystoreDataGridView.DataSource -ne $null) -and ($p7bDataGridView.DataSource -ne $null)
-        $createChainButton.Enabled = ($keystoreDataGridView.DataSource -ne $null) -and ($p7bDataGridView.DataSource -ne $null)
         $cleanupButton.Enabled = ($keystoreDataGridView.DataSource -ne $null)
     })
 })
@@ -610,7 +597,6 @@ $keystoreOpenButton.Add_Click({
             $keystoreDataGridView.DataSource = $keystoreDataTable
         }
         $securePassword.Dispose()
-        # Automatically compare after loading
         Compare-Certificates -KeystoreDataGridView $keystoreDataGridView -P7bDataGridView $p7bDataGridView
         $infoTextBox.Visible = ($keystoreDataGridView.DataSource -ne $null) -and ($p7bDataGridView.DataSource -ne $null)
     }
@@ -619,6 +605,7 @@ $keystoreOpenButton.Add_Click({
     $cleanupButton.Enabled = ($keystoreDataGridView.DataSource -ne $null)
 
 })
+
 
 $p7bBrowseButton.Add_Click({
     $OpenFileDialog = New-Object System.Windows.Forms.OpenFileDialog
@@ -653,14 +640,14 @@ $p7bBrowseButton.Add_Click({
             }
             $p7bDataGridView.DataSource = $p7bDataTable
         }
-        # Automatically compare after loading
         Compare-Certificates -KeystoreDataGridView $keystoreDataGridView -P7bDataGridView $p7bDataGridView
          $infoTextBox.Visible = ($keystoreDataGridView.DataSource -ne $null) -and ($p7bDataGridView.DataSource -ne $null)
     }
     $replaceButton.Enabled = ($keystoreDataGridView.DataSource -ne $null) -and ($p7bDataGridView.DataSource -ne $null)
-    $createChainButton.Enabled = ($keystoreDataGridView.DataSource -ne $null -and ($p7bDataGridView.DataSource -ne $null)
+    $createChainButton.Enabled = ($keystoreDataGridView.DataSource -ne $null) -and ($p7bDataGridView.DataSource -ne $null)
     $cleanupButton.Enabled = ($keystoreDataGridView.DataSource -ne $null)
 })
+
 
 $keystoreBrowseButton.Add_Click({
     $OpenFileDialog = New-Object System.Windows.Forms.OpenFileDialog
@@ -669,6 +656,8 @@ $keystoreBrowseButton.Add_Click({
         $keystoreTextBox.Text = $OpenFileDialog.FileName
     }
 })
+
+
 
 $replaceButton.Add_Click({
     $selectedKeystoreIndex = $keystoreDataGridView.SelectedRows[0].Index
@@ -711,7 +700,6 @@ $replaceButton.Add_Click({
                             $keystoreCertificates.Add($cert) | Out-Null
                         }
                         $keystoreDataGridView.DataSource = $keystoreDataTable
-                         # Refresh comparison after replacing
                         Compare-Certificates -KeystoreDataGridView $keystoreDataGridView -P7bDataGridView $p7bDataGridView
                         $infoTextBox.Visible = ($keystoreDataGridView.DataSource -ne $null) -and ($p7bDataGridView.DataSource -ne $null)
                     }
@@ -724,7 +712,7 @@ $replaceButton.Add_Click({
     {
         [System.Windows.Forms.MessageBox]::Show("Please select one certificate from Keystore and one from P7B to replace.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     }
-     #Keep enabled status.
+    #Keep enabled status
 })
 
 $createChainButton.Add_Click({
@@ -790,26 +778,26 @@ $cleanupButton.Add_Click({
                             $keystoreCertificates.Add($cert) | Out-Null
                         }
                         $keystoreDataGridView.DataSource = $keystoreDataTable
-                        # Refresh comparison after cleanup
                         Compare-Certificates -KeystoreDataGridView $keystoreDataGridView -P7bDataGridView $p7bDataGridView
-                         $infoTextBox.Visible = ($keystoreDataGridView.DataSource -ne $null) -and ($p7bDataGridView.DataSource -ne $null)
+                        $infoTextBox.Visible = ($keystoreDataGridView.DataSource -ne $null) -and ($p7bDataGridView.DataSource -ne $null)
                     }
                 }
         }
     }
-     #Keep enabled status.
+    #Keep enabled status.
 })
 
 
 $keystoreDataGridView.add_SelectionChanged({
-  #Keep Enabled Status
+  #Keep Enabled Status.
 })
 
 $p7bDataGridView.add_SelectionChanged({
-    #Keep Enabled Status
+    #Keep Enabled Status.
 })
 
 # --- Add Controls to Form ---
+
 $form.Controls.Add($keystoreLabel)
 $form.Controls.Add($keystoreTextBox)
 $form.Controls.Add($keystoreBrowseButton)
@@ -822,7 +810,7 @@ $form.Controls.Add($p7bDataGridView)
 $form.Controls.Add($replaceButton)
 $form.Controls.Add($createChainButton)
 $form.Controls.Add($cleanupButton)
-$form.Controls.Add($infoTextBox) # Add the info textbox
+$form.Controls.Add($infoTextBox)
 
 # --- Show the Form ---
 $form.ShowDialog()
