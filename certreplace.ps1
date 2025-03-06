@@ -47,6 +47,7 @@ function Get-KeystorePassword {
         DialogResult = [System.Windows.Forms.DialogResult]::Cancel
     }
     $form.Controls.Add($cancelButton)
+
     $form.CancelButton = $cancelButton
 
     $result = $form.ShowDialog()
@@ -249,7 +250,6 @@ function Build-CertificateChain {
                 [System.Windows.Forms.MessageBox]::Show("Certificate chain saved to: $outputPath", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
             }
         }
-
         else {
             Write-Warning "Failed to build a valid certificate chain."
             [System.Windows.Forms.MessageBox]::Show("Failed to build a valid certificate chain.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
@@ -307,6 +307,140 @@ function Compare-Certificates {
     else {
         Show-Certificate -DataGridView $KeystoreDataGridView -MatchingSKIs @()
         Show-Certificate -DataGridView $P7bDataGridView -MatchingSKIs @()
+    }
+}
+
+function Cleanup-Keystore {
+    param(
+        [string]$KeystorePath,
+        [System.Security.SecureString]$KeystorePassword,
+        [System.Collections.ArrayList]$KeystoreCertificates,
+        [System.Collections.ArrayList]$P7BCertificates
+    )
+
+    $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($KeystorePassword)
+    $passwordString = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+
+    try {
+        $keystore = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
+        $flags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::DefaultKeySet -bor
+                 [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet -bor
+                 [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable
+        $keystore.Import($KeystorePath, $passwordString, $flags)
+
+        # --- 1. Remove Duplicate SKIs (Keep Latest Expiry) ---
+
+        $skiGroups = @{}
+        foreach ($cert in $KeystoreCertificates) {
+            $ski = Get-CertificateSKI $cert
+            if ($ski) {
+                if (!$skiGroups.ContainsKey($ski)) {
+                    $skiGroups[$ski] = New-Object System.Collections.ArrayList
+                }
+                $skiGroups[$ski].Add($cert)
+            }
+        }
+
+        $certsToRemove = New-Object System.Collections.ArrayList
+        foreach ($ski in $skiGroups.Keys) {
+            $group = $skiGroups[$ski]
+            if ($group.Count -gt 1) {
+                # Sort by NotAfter (descending - latest first)
+                $sortedGroup = $group | Sort-Object -Property NotAfter -Descending
+                # Keep the first (latest), mark the rest for removal
+                for ($i = 1; $i -lt $sortedGroup.Count; $i++) {
+                    $certsToRemove.Add($sortedGroup[$i]) | Out-Null
+                }
+            }
+        }
+
+        foreach ($certToRemove in $certsToRemove) {
+             Write-Host "Removing duplicate certificate (by SKI): $($certToRemove.Subject)" -ForegroundColor Yellow
+            $keystore.Remove($certToRemove)
+            $KeystoreCertificates.Remove($certToRemove) | Out-Null # Also remove from ArrayList
+        }
+
+
+        # --- 2. Remove and Replace with P7B Matches ---
+        $certsToRemove = New-Object System.Collections.ArrayList  # Reuse the list
+        foreach ($keystoreCert in $KeystoreCertificates) {
+            $keystoreSKI = Get-CertificateSKI $keystoreCert
+            foreach($p7bCert in $P7BCertificates){
+                $p7bSKI = Get-CertificateSKI $p7bCert
+                if($keystoreSKI -eq $p7bSKI){
+                    $certsToRemove.Add($keystoreCert) | Out-Null
+                    Write-Host "Replacing certificate with P7B match (by SKI): $($keystoreCert.Subject)" -ForegroundColor Yellow
+                    $keystore.Remove($keystoreCert)
+                    $keystore.Add($p7bCert)
+                    #Update the ArrayList
+                    $KeystoreCertificates.Remove($keystoreCert) | Out-Null
+                    $found = $false;
+                    foreach($existingp7b in $P7bCertificates){
+                        if($existingp7b.Thumbprint -eq $p7bCert.Thumbprint){
+                            $found = $true;
+                            break;
+                        }
+                    }
+                    if(-not $found){
+                        $P7bCertificates.Add($p7bCert) | Out-Null
+                    }
+
+                    break  # Important: Stop inner loop after finding a match
+                }
+            }
+        }
+
+        # --- 3. Chain Management ---
+
+       foreach($personalCert in $KeystoreCertificates){
+            $chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain
+            $chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
+            $chain.ChainPolicy.VerificationFlags = [System.Security.Cryptography.X509Certificates.X509VerificationFlags]::NoFlag
+            $intermediateCerts = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
+             foreach($cert in $P7BCertificates)
+            {
+                $intermediateCerts.Add($cert)
+            }
+            $chain.ChainPolicy.ExtraStore.AddRange($intermediateCerts)
+
+            if($chain.Build($personalCert)){
+                #Chain is Valid, proceed
+                if($chain.ChainElements.Count -gt 1){
+                    #It's a real chain, remove from keystore.  The last element is the root, don't remove it.
+                     Write-Host "Rebuilding Chain For: $($personalCert.Subject)" -ForegroundColor Yellow
+                    for($i = 1; $i -lt $chain.ChainElements.Count - 1; $i++){
+                        $certToRemove = $chain.ChainElements[$i].Certificate
+                        $keystore.Remove($certToRemove)
+                        $KeystoreCertificates.Remove($certToRemove) | Out-Null
+                    }
+                }
+
+            }
+            $chain.Reset()
+       }
+
+
+        # --- Save Modified Keystore ---
+        $keystoreBytes = $keystore.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pkcs12, $passwordString)
+        [System.IO.File]::WriteAllBytes($KeystorePath, $keystoreBytes)
+
+        Write-Host "Keystore cleanup complete." -ForegroundColor Green
+        [System.Windows.Forms.MessageBox]::Show("Keystore cleanup complete.", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+         return $true
+    }
+    catch {
+        $errorMessage = "Error during keystore cleanup: $($_.Exception.Message)"
+        Write-Warning $errorMessage
+        [System.Windows.Forms.MessageBox]::Show($errorMessage, "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        return $false
+    }
+    finally {
+        if ($bstr) {
+            [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+        }
+        if ($KeystorePassword) {
+            $KeystorePassword.Dispose()
+        }
     }
 }
 
@@ -392,6 +526,13 @@ $createChainButton.Size = New-Object System.Drawing.Size(150, 30)
 $createChainButton.Text = "Create Chain"
 $createChainButton.Enabled = $false
 
+$cleanupButton = New-Object System.Windows.Forms.Button
+$cleanupButton.Location = New-Object System.Drawing.Point(490, 380)  # Adjust location as needed
+$cleanupButton.Size = New-Object System.Drawing.Size(150, 30)
+$cleanupButton.Text = "Cleanup Keystore"
+$cleanupButton.Enabled = $false  # Initially disabled
+$form.Controls.Add($cleanupButton)
+
 # --- Form Shown Event (CRITICAL FIX) ---
 $form.add_Shown({
     # Use Invoke to ensure UI updates happen on the correct thread.
@@ -399,6 +540,7 @@ $form.add_Shown({
         if ($keystoreDataGridView.Columns.Contains("PrivateKey")) {
             $keystoreDataGridView.Columns["PrivateKey"].Visible = $false
         }
+        $cleanupButton.Enabled = ($keystoreDataGridView.DataSource -ne $null)
     })
 })
 
@@ -451,7 +593,7 @@ $keystoreOpenButton.Add_Click({
     $replaceButton.Enabled = $false
     $createChainButton.Enabled = $false
     $compareButton.Enabled = ($keystoreDataGridView.DataSource -ne $null) -and ($p7bDataGridView.DataSource -ne $null)
-
+    $cleanupButton.Enabled = ($keystoreDataGridView.DataSource -ne $null)
 })
 
 
@@ -495,6 +637,7 @@ $p7bBrowseButton.Add_Click({
     $replaceButton.Enabled = $false
     $createChainButton.Enabled = $false
     $compareButton.Enabled = ($keystoreDataGridView.DataSource -ne $null) -and ($p7bDataGridView.DataSource -ne $null)
+    $cleanupButton.Enabled = ($keystoreDataGridView.DataSource -ne $null)
 })
 
 
@@ -509,7 +652,6 @@ $keystoreBrowseButton.Add_Click({
 $compareButton.Add_Click({
     Compare-Certificates -KeystoreDataGridView $keystoreDataGridView -P7bDataGridView $p7bDataGridView
 })
-
 
 $replaceButton.Add_Click({
     # Get selected row *indexes*
@@ -564,7 +706,7 @@ $replaceButton.Add_Click({
                             $keystoreCertificates.Add($cert) | Out-Null
                         }
                         $keystoreDataGridView.DataSource = $keystoreDataTable
-                        Compare-Certificates  -KeystoreDataGridView $keystoreDataGridView -P7bDataGridView $p7bDataGridView
+                        Compare-Certificates  -KeystoreDataGridView $keystoreDataGridView -P7bDataGridView $p7bDataGridView #refresh compare view
                     }
                 }
 
@@ -578,6 +720,7 @@ $replaceButton.Add_Click({
 
      $replaceButton.Enabled = $false
      $createChainButton.Enabled = $false
+      $cleanupButton.Enabled = ($keystoreDataGridView.DataSource -ne $null)
      $compareButton.Enabled = ($keystoreDataGridView.DataSource -ne $null) -and ($p7bDataGridView.DataSource -ne $null)
 })
 
@@ -589,7 +732,7 @@ $createChainButton.Add_Click({
     $selectedKeystoreCert = $keystoreCertificates[$selectedKeystoreIndex]
     $p7bCerts = $p7bDataGridView.DataSource
 
-    if($selectedKeystoreCert -and $p7bCerts -is [System.Data.DataTable])
+    if($selectedKeystoreCert -and $p7bCerts is [System.Data.DataTable])
     {
         # Convert DataTable to X509Certificate2Collection
         $intermediateCerts = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
@@ -613,7 +756,63 @@ $createChainButton.Add_Click({
     $replaceButton.Enabled = $false
     $createChainButton.Enabled = $false
     $compareButton.Enabled = ($keystoreDataGridView.DataSource -ne $null) -and ($p7bDataGridView.DataSource -ne $null)
+    $cleanupButton.Enabled = ($keystoreDataGridView.DataSource -ne $null)
+})
 
+$cleanupButton.Add_Click({
+    $securePassword = Get-KeystorePassword
+    if ($securePassword) {
+       $result = Cleanup-Keystore -KeystorePath $keystoreTextBox.Text -KeystorePassword $securePassword -KeystoreCertificates $keystoreCertificates -P7BCertificates $p7bCertificates
+       $securePassword.Dispose()
+
+        if($result){
+            $refreshSecurePassword = Get-KeystorePassword
+                if($refreshSecurePassword)
+                {
+                    $updatedKeystoreCerts = Get-KeystoreCertificates -KeystorePath $keystoreTextBox.Text -Password $refreshSecurePassword
+                    $refreshSecurePassword.Dispose()
+                    if ($updatedKeystoreCerts) {
+
+                        # Clear previous data from the ArrayList
+                        $keystoreCertificates.Clear()
+
+                         # Create a DataTable for the keystore certificates
+                        $keystoreDataTable = New-Object System.Data.DataTable
+                        $keystoreDataTable.Columns.Add("Subject", [string]) | Out-Null
+                        $keystoreDataTable.Columns.Add("Issuer", [string]) | Out-Null
+                        $keystoreDataTable.Columns.Add("NotBefore", [datetime]) | Out-Null
+                        $keystoreDataTable.Columns.Add("NotAfter", [datetime]) | Out-Null
+                        $keystoreDataTable.Columns.Add("Thumbprint", [string]) | Out-Null
+                        $keystoreDataTable.Columns.Add("SerialNumber", [string]) | Out-Null
+                         $keystoreDataTable.Columns.Add("SKI", [string]) | Out-Null
+
+                        # Populate the DataTable and ArrayList
+                        foreach ($cert in $updatedKeystoreCerts) {
+                            $row = $keystoreDataTable.NewRow()
+                            $row.Subject = $cert.Subject
+                            $row.Issuer = $cert.Issuer
+                            $row.NotBefore = $cert.NotBefore
+                            $row.NotAfter = $cert.NotAfter
+                            $row.Thumbprint = $cert.Thumbprint
+                            $row.SerialNumber = $cert.SerialNumber
+                            $row.SKI = Get-CertificateSKI $cert
+                            $keystoreDataTable.Rows.Add($row)
+
+                            # Add to ArrayList
+                            $keystoreCertificates.Add($cert) | Out-Null
+                        }
+                        $keystoreDataGridView.DataSource = $keystoreDataTable
+                        Compare-Certificates  -KeystoreDataGridView $keystoreDataGridView -P7bDataGridView $p7bDataGridView #refresh compare view
+                    }
+                }
+
+        }
+
+    }
+    $replaceButton.Enabled = $false
+    $createChainButton.Enabled = $false
+     $cleanupButton.Enabled = ($keystoreDataGridView.DataSource -ne $null)
+    $compareButton.Enabled = ($keystoreDataGridView.DataSource -ne $null) -and ($p7bDataGridView.DataSource -ne $null)
 })
 
 $keystoreDataGridView.add_SelectionChanged({
@@ -631,6 +830,7 @@ $keystoreDataGridView.add_SelectionChanged({
     else{
         $createChainButton.Enabled = $false
     }
+    $cleanupButton.Enabled = ($keystoreDataGridView.DataSource -ne $null)
 })
 
 $p7bDataGridView.add_SelectionChanged({
@@ -648,6 +848,7 @@ $p7bDataGridView.add_SelectionChanged({
      else{
         $createChainButton.Enabled = $false
     }
+     $cleanupButton.Enabled = ($keystoreDataGridView.DataSource -ne $null)
 })
 # --- Add Controls to Form ---
 
@@ -663,6 +864,6 @@ $form.Controls.Add($p7bDataGridView)
 $form.Controls.Add($replaceButton)
 $form.Controls.Add($createChainButton)
 $form.Controls.Add($compareButton)
-
+$form.Controls.Add($cleanupButton)
 # --- Show the Form ---
 $form.ShowDialog()
