@@ -8,6 +8,8 @@ Add-Type -AssemblyName System.Runtime.InteropServices
 $keystoreCertificates = New-Object System.Collections.ArrayList
 $p7bCertificates = New-Object System.Collections.ArrayList
 
+# --- Functions ---
+
 function Get-KeystorePassword {
     $form = New-Object System.Windows.Forms.Form -Property @{
         Text          = "Enter Keystore Password"
@@ -41,7 +43,7 @@ function Get-KeystorePassword {
     $cancelButton = New-Object System.Windows.Forms.Button -Property @{
         Location     = New-Object System.Drawing.Point(210, 80)
         Size         = New-Object System.Drawing.Size(75, 23)
-Text         = "Cancel"
+        Text         = "Cancel"
         DialogResult = [System.Windows.Forms.DialogResult]::Cancel
     }
     $form.Controls.Add($cancelButton)
@@ -72,7 +74,8 @@ function Get-KeystoreCertificates {
         $keystore = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
         $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($Password)
         $passwordString = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
-        $keystore.Import($KeystorePath, $passwordString, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable -bor [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet)
+        $flags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable -bor [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet -bor [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::DefaultKeySet
+        $keystore.Import($KeystorePath, $passwordString, $flags)
         return $keystore
     }
     catch {
@@ -115,18 +118,15 @@ function Show-Certificate {
 
     foreach ($row in $DataGridView.Rows) {
       if ($row.DataBoundItem) {
-        # Check the type and cast appropriately
         if ($row.DataBoundItem -is [System.Data.DataRowView]) {
-            $dataRow = $row.DataBoundItem.Row  # Access the underlying DataRow
+            $dataRow = $row.DataBoundItem.Row
 
-            # Check for expiration by accessing columns by name
             if ($dataRow.Table.Columns.Contains("NotAfter") -and $dataRow.Table.Columns.Contains("NotBefore")) {
                 if ($dataRow["NotAfter"] -lt [DateTime]::Now -or $dataRow["NotBefore"] -gt [DateTime]::Now) {
                     $row.DefaultCellStyle.ForeColor = [System.Drawing.Color]::Red
                 }
             }
 
-            # Check for matching SKIs
             if ($dataRow.Table.Columns.Contains("SKI")) {
                 $ski = $dataRow["SKI"]
                 if ($ski -and $MatchingSKIs.Contains($ski)) {
@@ -161,7 +161,13 @@ function Set-KeystoreCertificate {
 
     try {
         $keystore = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
-        $keystore.Import($KeystorePath, $passwordString, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::DefaultKeySet -bor [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet)
+
+        #CRITICAL:  Re-import with DefaultKeySet, PersistKeySet and Exportable
+        $flags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::DefaultKeySet -bor
+                 [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet -bor
+                 [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable
+        $keystore.Import($KeystorePath, $passwordString, $flags)
+
 
         $indexToReplace = -1
         for ($i = 0; $i -lt $keystore.Count; $i++) {
@@ -178,6 +184,8 @@ function Set-KeystoreCertificate {
         }
         $keystore.RemoveAt($indexToReplace)
         $keystore.Add($NewCertificate)
+
+        # Export the *entire modified keystore* (containing the new cert, without the old).
         $keystoreBytes = $keystore.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pkcs12, $passwordString)
         [System.IO.File]::WriteAllBytes($KeystorePath, $keystoreBytes)
 
@@ -186,8 +194,9 @@ function Set-KeystoreCertificate {
         return $true
     }
     catch {
-        Write-Warning "Error replacing certificate: $($_.Exception.Message)"
-        [System.Windows.Forms.MessageBox]::Show("Error replacing certificate: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        $errorMessage = "Error replacing certificate: $($_.Exception.Message)"
+        Write-Warning $errorMessage
+        [System.Windows.Forms.MessageBox]::Show($errorMessage, "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
         return $false
     }
     finally {
@@ -233,12 +242,14 @@ function Build-CertificateChain {
             $SaveFileDialog.FileName = "chained_certificate.pfx"
             if ($SaveFileDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
                 $outputPath = $SaveFileDialog.FileName
+                 # Directly export. The private key is included in the leaf certificate.
                  $pfxBytes = $chainedCerts.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pkcs12, $passwordString)
                  [System.IO.File]::WriteAllBytes($outputPath, $pfxBytes)
                 Write-Host "Certificate chain saved to: $outputPath" -ForegroundColor Green
                 [System.Windows.Forms.MessageBox]::Show("Certificate chain saved to: $outputPath", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
             }
         }
+
         else {
             Write-Warning "Failed to build a valid certificate chain."
             [System.Windows.Forms.MessageBox]::Show("Failed to build a valid certificate chain.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
@@ -266,39 +277,34 @@ function Build-CertificateChain {
 }
 
 function Compare-Certificates {
-    param (
+  param (
         [System.Windows.Forms.DataGridView]$KeystoreDataGridView,
         [System.Windows.Forms.DataGridView]$P7bDataGridView
     )
 
-    # Get the DataTables from the DataGridViews
-    $keystoreData = $KeystoreDataGridView.DataSource
-    $p7bData = $P7bDataGridView.DataSource
+  $keystoreData = $KeystoreDataGridView.DataSource
+  $p7bData = $P7bDataGridView.DataSource
 
     if ($keystoreData -is [System.Data.DataTable] -and $p7bData -is [System.Data.DataTable]) {
         $matchingSKIs = New-Object System.Collections.ArrayList
 
-        # Iterate through the rows of the keystore DataTable
         foreach ($keystoreRow in $keystoreData.Rows) {
             $keystoreSKI = $keystoreRow["SKI"]
             if ($keystoreSKI) {
-                # Iterate through the rows of the P7B DataTable
                 foreach ($p7bRow in $p7bData.Rows) {
                     $p7bSKI = $p7bRow["SKI"]
                     if ($p7bSKI -and $keystoreSKI -eq $p7bSKI) {
                         $matchingSKIs.Add($keystoreSKI) | Out-Null
-                        break  # No need to continue inner loop
+                        break
                     }
                 }
             }
         }
 
-        # Call Show-Certificate with DataGridViews and matching SKIs
         Show-Certificate -DataGridView $KeystoreDataGridView -MatchingSKIs $matchingSKIs
         Show-Certificate -DataGridView $P7bDataGridView -MatchingSKIs $matchingSKIs
     }
     else {
-        # Clear any previous highlighting if one of the DataGridViews is empty
         Show-Certificate -DataGridView $KeystoreDataGridView -MatchingSKIs @()
         Show-Certificate -DataGridView $P7bDataGridView -MatchingSKIs @()
     }
@@ -504,6 +510,7 @@ $compareButton.Add_Click({
     Compare-Certificates -KeystoreDataGridView $keystoreDataGridView -P7bDataGridView $p7bDataGridView
 })
 
+
 $replaceButton.Add_Click({
     # Get selected row *indexes*
     $selectedKeystoreIndex = $keystoreDataGridView.SelectedRows[0].Index
@@ -574,7 +581,6 @@ $replaceButton.Add_Click({
      $compareButton.Enabled = ($keystoreDataGridView.DataSource -ne $null) -and ($p7bDataGridView.DataSource -ne $null)
 })
 
-#Build Chain (Modified)
 $createChainButton.Add_Click({
     # Get selected row *indexes*
     $selectedKeystoreIndex = $keystoreDataGridView.SelectedRows[0].Index
@@ -643,7 +649,6 @@ $p7bDataGridView.add_SelectionChanged({
         $createChainButton.Enabled = $false
     }
 })
-
 # --- Add Controls to Form ---
 
 $form.Controls.Add($keystoreLabel)
@@ -661,4 +666,3 @@ $form.Controls.Add($compareButton)
 
 # --- Show the Form ---
 $form.ShowDialog()
-        
